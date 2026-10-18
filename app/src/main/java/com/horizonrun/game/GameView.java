@@ -245,6 +245,16 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             glowCol = 0xFFFFFFFF;
             bgCol = 0xFF0E2457;
         }
+        // Ground cover: snow when it snows, fallen leaves when leaves fall.
+        // (Purely visual - crashes are worked out from positions, not the ground.)
+        int weather = Holidays.WEATHER[holiday];
+        if (weather == 1) {
+            GROUND_A = dark ? 0xFF5A6678 : 0xFFEAF1F8;
+            GROUND_B = dark ? 0xFF525E70 : 0xFFDCE6F0;
+        } else if (weather == 2) {
+            GROUND_A = dark ? 0xFF3E2A16 : 0xFFB8782E;
+            GROUND_B = dark ? 0xFF4A3219 : 0xFFA3682A;
+        }
         int tint = dark ? Holidays.TINT_DARK[holiday] : Holidays.TINT_LIGHT[holiday];
         if (tint != 0) {
             HAZE = mixCol(HAZE, tint, dark ? 0.45f : 0.35f);
@@ -1523,7 +1533,15 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         tri(c, -1.6f * k, -1.0f * k, 1.6f * k, -1.0f * k, 0f, -4.2f * k, fog(cols[0]));
         tri(c, -1.25f * k, -2.6f * k, 1.25f * k, -2.6f * k, 0f, -5.8f * k, fog(cols[1]));
         tri(c, -0.85f * k, -4.2f * k, 0.85f * k, -4.2f * k, 0f, -7.2f * k, fog(cols[2]));
+        if (snowy()) {
+            int snow = fog(dark ? 0xFFB4C0D2 : 0xFFFFFFFF);
+            tri(c, -0.56f * k, -2.92f * k, 0.56f * k, -2.92f * k, 0f, -4.2f * k, snow);
+            tri(c, -0.44f * k, -4.44f * k, 0.44f * k, -4.44f * k, 0f, -5.8f * k, snow);
+            tri(c, -0.34f * k, -6.0f * k, 0.34f * k, -6.0f * k, 0f, -7.2f * k, snow);
+        }
     }
+
+    private static final int[] AUTUMN_OAK = {0xFFD9772A, 0xFFC4462A, 0xFFE0A21E};
 
     private static final int[] OAK_COLS = {0xFF3F8F3A, 0xFF4E9A35, 0xFF5E8F2E};
 
@@ -1537,7 +1555,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         path.lineTo(-0.2f * k, -3.4f * k);
         path.close();
         c.drawPath(path, p);
-        int base = OAK_COLS[o.color % 3];
+        int base = leafy() ? AUTUMN_OAK[o.color % 3] : OAK_COLS[o.color % 3];
         p.setColor(fog(darker(base, 0.8f)));
         c.drawCircle(-1.25f * k, -3.7f * k, 1.35f * k, p);
         c.drawCircle(1.25f * k, -3.7f * k, 1.35f * k, p);
@@ -1545,6 +1563,15 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         c.drawCircle(0f, -4.6f * k, 1.9f * k, p);
         p.setColor(fog(lighter(base, 0.25f)));
         c.drawCircle(-0.5f * k, -5.1f * k, 0.9f * k, p);
+        if (snowy()) {
+            p.setColor(fog(dark ? 0xFFB4C0D2 : 0xFFFFFFFF));
+            rect.set(-1.45f * k, -6.6f * k, 1.45f * k, -5.75f * k);
+            c.drawOval(rect, p);
+            rect.set(-2.45f * k, -5.15f * k, -0.25f * k, -4.65f * k);
+            c.drawOval(rect, p);
+            rect.set(0.25f * k, -5.15f * k, 2.45f * k, -4.65f * k);
+            c.drawOval(rect, p);
+        }
     }
 
     private void drawRock(Canvas c, Obj o) {
@@ -1565,6 +1592,19 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         path.close();
         p.setColor(fog(0xFFA4A8AC));
         c.drawPath(path, p);
+        if (snowy()) {
+            // a cap of snow following the top of the rock
+            path.reset();
+            int n = v.length / 2;
+            for (int i = 1; i < n - 1; i++) {
+                float x = v[i * 2] * k, y = v[i * 2 + 1] * k;
+                if (i == 1) path.moveTo(x, y); else path.lineTo(x, y);
+            }
+            for (int i = n - 2; i >= 1; i--) path.lineTo(v[i * 2] * k * 0.92f, v[i * 2 + 1] * k * 0.62f);
+            path.close();
+            p.setColor(fog(dark ? 0xFFB4C0D2 : 0xFFFFFFFF));
+            c.drawPath(path, p);
+        }
     }
 
     private void drawDeer(Canvas c, Obj o) {
@@ -1666,7 +1706,37 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         tri(c, 0.4f, -0.68f, 0.52f, -0.7f, 0.44f, -0.88f, fur);
     }
 
+    private boolean snowy() { return Holidays.WEATHER[holiday] == 1; }
+    private boolean leafy() { return Holidays.WEATHER[holiday] == 2; }
+
+    /** A leaf lying flat on the ground (Thanksgiving). */
+    private void drawFallenLeaf(Canvas c, Obj o) {
+        float k = o.size;
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(fog(LEAF_COLS[o.color % 4]));
+        c.save();
+        c.rotate((o.x * 53f) % 180f);
+        rect.set(-0.2f * k, -0.06f * k, 0.2f * k, 0.06f * k);
+        c.drawOval(rect, p);
+        c.restore();
+    }
+
+    /** A small lump of snow (Christmas). */
+    private void drawSnowBump(Canvas c, Obj o) {
+        if (o.color % 2 == 0) return;          // keep it sparse
+        float k = o.size;
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(fog(dark ? 0xFF7C889A : 0xFFC8D6E6));
+        rect.set(-0.3f * k, -0.12f * k, 0.3f * k, 0.03f * k);
+        c.drawOval(rect, p);
+        p.setColor(fog(dark ? 0xFF9AA6B8 : 0xFFFFFFFF));
+        rect.set(-0.24f * k, -0.15f * k, 0.18f * k, -0.03f * k);
+        c.drawOval(rect, p);
+    }
+
     private void drawGrass(Canvas c, Obj o) {
+        if (snowy()) { drawSnowBump(c, o); return; }
+        if (leafy()) { drawFallenLeaf(c, o); return; }
         float k = o.size;
         int[] cols = {0xFF3D7D32, 0xFF467F2E, 0xFF35702C, 0xFF4C8A34};
         p.setStyle(Paint.Style.STROKE);
@@ -1680,6 +1750,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void drawFlower(Canvas c, Obj o) {
+        if (snowy()) return;
+        if (leafy()) { drawFallenLeaf(c, o); return; }
         int[] cols = {0xFFFFE15A, 0xFFFFFFFF, 0xFFE86AA6, 0xFFB98CFF};
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(0.03f);
@@ -3348,7 +3420,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private void drawWeather(Canvas c) {
         int kind = Holidays.WEATHER[holiday];
         if (kind == 0 || weatherFor != holiday) return;
-        int count = kind == 1 ? 70 : kind == 2 ? 26 : 45;
+        int count = kind == 1 ? 52 : kind == 2 ? 20 : 34;   // 25% fewer than before
         p.setStyle(Paint.Style.FILL);
         for (int i = 0; i < count; i++) {
             float x = wx[i] * W, y = wy[i] * H, sz = wsz[i] * H;
