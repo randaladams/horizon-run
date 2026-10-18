@@ -6,7 +6,7 @@ A first-person running game for Android, played in landscape. You run across a s
 
 - **Tilt the phone left/right** to steer.
 - **Hold the right half of the screen** to sprint. The longer you hold, the faster you go.
-- **Tap the left half of the screen** to jump (about 1.5 m). You can clear rocks and foxes; trees, deer, bears and low branches still have to be steered around. Some rows of rocks are solid walls with no gap, so jumping is the only way through. Each jump over an obstacle is +10.
+- **Tap the left half of the screen** to jump (about 1.5 m). You can clear rocks and foxes. **Tap again while in the air for a high jump** (about 3 m) that clears bears and deer (+25). Trees and low branches still have to be steered around. Some rows of rocks are solid walls with no gap, so jumping is the only way through. Each jump over an obstacle is +10.
 - **Lift your finger** and you ease back to your base speed, which keeps climbing the longer the run lasts.
 
 **Flowers** add to your score: glowing flowers come in curving trails of five, +20 each and a **Bouquet +100** bonus for collecting the whole trail; rare **golden flowers** are worth +150. Close calls earn +25 bonus metres. Run through a **glowing snail** to knock your base speed back down (about 27 km/h); snails show up every 5–9 seconds, and more often the faster you're going. A **gold line** across the ground marks your best score; crossing it plays a chime. **Scores** (bottom-left of the start and crash screens) shows your last 10 runs; **Reset scores** is inside (tap twice).
@@ -15,7 +15,7 @@ A first-person running game for Android, played in landscape. You run across a s
 
 After a crash you can **watch an ad to keep running** (once per run, with a short shield). An ad also plays between games after every 4 games.
 
-New to the game? Tap **How to play** on the start screen for a 12-step practice run covering steering, sprinting, jumping (including a rock wall), each kind of obstacle, snails and the options.
+New to the game? Tap **How to play** on the start screen for a 13-step practice run covering steering, sprinting, jumping (including a rock wall and a high jump over a bear), each kind of obstacle, snails and the options.
 
 ## Install on your phone
 

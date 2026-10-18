@@ -153,10 +153,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private boolean tutSprinted;
     private Obj tutObj;
     private float sceneryAcc;
-    private static final int TUT_STEPS = 12;
+    private static final int TUT_STEPS = 13;
     // tutorial step numbers
     private static final int T_LEFT = 0, T_RIGHT = 1, T_SPRINT = 2, T_RELEASE = 3, T_JUMP = 4,
-            T_ROCK = 5, T_WALL = 6, T_BRANCH = 7, T_DEER = 8, T_SNAIL = 9, T_CARD = 10;
+            T_ROCK = 5, T_WALL = 6, T_BEAR = 7, T_BRANCH = 8, T_DEER = 9, T_SNAIL = 10, T_CARD = 11;
     private final ArrayList<Obj> tutWall = new ArrayList<>();
     private boolean tutJumped;
 
@@ -166,6 +166,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private volatile boolean jumpReq;
     private float jumpH, jumpV;
     private boolean airborne;
+    private boolean highJumped;                   // second tap already used this jump
+    private static final float HIGH_PEAK = 3.0f;  // a high jump tops out about 3 m up
     private static final float SNAIL_SLOW = 25f;   // seconds of speed build-up removed
 
     // ---- rendering ----------------------------------------------------------------
@@ -511,9 +513,15 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             jumpReq = false;
             if (!airborne) {
                 airborne = true;
+                highJumped = false;
                 jumpV = JUMP_V;
                 play(sJump, 0.7f);
                 if (state == TUTORIAL) tutJumped = true;
+            } else if (!highJumped && jumpH < HIGH_PEAK - 0.3f) {
+                // second tap in the air: kick up so the jump peaks at about 3 m
+                highJumped = true;
+                jumpV = (float) Math.sqrt(2f * GRAVITY * (HIGH_PEAK - jumpH));
+                play(sJump, 0.8f, 1.35f);
             }
         }
         if (airborne) {
@@ -533,6 +541,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         switch (o.type) {
             case ROCK: return 0.8f * o.size;
             case FOX:  return 0.75f;
+            case BEAR: return 1.6f;    // needs a high jump (double tap)
+            case DEER: return 2.2f;    // antlers too - high jump only
             default:   return 999f;
         }
     }
@@ -978,9 +988,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
     }
 
-    private void play(int id, float vol) {
+    private void play(int id, float vol) { play(id, vol, 1f); }
+
+    private void play(int id, float vol, float rate) {
         if (!soundOn || sfx == null || id == 0) return;
-        try { sfx.play(id, vol, vol, 1, 0, 1f); } catch (Exception ignored) { }
+        try { sfx.play(id, vol, vol, 1, 0, rate); } catch (Exception ignored) { }
     }
 
     private void playChime() {
@@ -1097,9 +1109,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 o.judged = true;
                 float gapToPlayer = clearance(o);
                 if (gapToPlayer < 0f && jumpH >= clearHeight(o)) {
-                    bonus += 10;
-                    msg = "JUMP!  +10";
-                    msgTimer = 0.8f;
+                    boolean big = o.type == BEAR || o.type == DEER;
+                    bonus += big ? 25 : 10;
+                    msg = big ? "HIGH JUMP!  +25" : "JUMP!  +10";
+                    msgTimer = 0.9f;
                 } else if (gapToPlayer < 0f && invuln > 0f) {
                     // still shielded after continuing
                 } else if (gapToPlayer < 0f) {
@@ -2125,6 +2138,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             "Tap the LEFT side to JUMP",
             "Steer around the rock",
             "Rock wall! JUMP over it",
+            "Bear! Tap TWICE to HIGH JUMP",
             "Low branches hang at head height",
             "Animals move!",
             "Run through the glowing snail",
@@ -2138,23 +2152,24 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             "A quick tap sends you about 1.5 m into the air.",
             "Obstacles rise over the curved horizon and grow as they get close.",
             "No way around \u2014 tap the left side just before you reach it.",
+            "Tap once to jump, then tap again in the air to go twice as high.",
             "You can't duck — steer past the end of the limb.",
             "Watch which way the deer runs and pass behind it.",
             "Snails knock your base speed back down. Steer into it!",
             "", ""};
     private static final String[][] TUT_CARD = {
-            {},{},{},{},{},{},{},{},{},{},
+            {},{},{},{},{},{},{},{},{},{},{},
             {"Your score is the distance you run, in metres.",
              "Your base speed keeps rising the longer you survive.",
              "Sprinting adds speed on top — let go to fall back to base speed.",
              "Flowers +20 each, +100 for a full trail of 5. Golden flowers +150.",
-             "Near misses +25, jumps over obstacles +10, snails +10.",
+             "Near misses +25, jumps +10, high jumps over bears/deer +25, snails +10.",
              "A gold line on the ground marks your best \u2014 cross it for a chime!",
              "Pass your best score and the screen flashes gold."},
             {"Sun / moon button (start screen): light or dark mode.",
              "Scores (bottom-left): your last 10 runs. Reset scores is in there.",
              "How To Play (bottom-right): replay this tutorial any time.",
-             "You can jump rocks and foxes \u2014 not trees, deer, bears or branches.",
+             "Jump rocks and foxes; double-tap to high-jump bears and deer. Trees and branches: steer.",
              "Hold the phone level to run straight.",
              "Snails turn up more often as you get faster — use them!"}};
 
@@ -2282,7 +2297,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             case T_JUMP:
                 if (tutJumped && !airborne) tutSuccess();
                 break;
-            case T_ROCK: case T_WALL: case T_BRANCH: case T_DEER: case T_SNAIL:
+            case T_ROCK: case T_WALL: case T_BEAR: case T_BRANCH: case T_DEER: case T_SNAIL:
                 updateTutChallenge(dt);
                 break;
             default:  // info cards
@@ -2325,6 +2340,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     }
                     break;
                 }
+                case T_BEAR:
+                    // a bear standing right in your path
+                    tutObj = make(BEAR, px, z);
+                    tutObj.x = px;
+                    tutObj.vx = 0.01f;
+                    objs.add(tutObj);
+                    break;
                 case T_BRANCH:
                     tutObj = make(BRANCH, px, z);
                     objs.add(tutObj);
@@ -2377,7 +2399,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     tutSay("Missed it — steer right into it. Try again!", false, 2.2f);
                 } else {
                     play(sCrash, 0.5f);
-                    if (tutStep != T_WALL) tutSay("Ouch! That would have been a crash. Try again.", false, 2.2f);
+                    if (tutStep == T_BEAR) {
+                        tutSay(jumpH > 0f ? "Higher! Tap again while you're in the air."
+                                          : "Tap the LEFT side twice to high jump!", false, 2.4f);
+                    } else if (tutStep != T_WALL) {
+                        tutSay("Ouch! That would have been a crash. Try again.", false, 2.2f);
+                    }
                     flash = 0.7f;
                     shake = 0.5f;
                     try {
@@ -2453,7 +2480,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
             if (tutStep <= T_RIGHT && tutWait < 0f) drawTiltHint(c, tutStep == T_LEFT ? -1f : 1f);
             if (tutStep == T_SPRINT || tutStep == T_RELEASE) drawSprintHint(c, tutStep == T_SPRINT);
-            if ((tutStep == T_JUMP || tutStep == T_WALL) && tutWait < 0f) drawJumpHint(c);
+            if ((tutStep == T_JUMP || tutStep == T_WALL || tutStep == T_BEAR) && tutWait < 0f) drawJumpHint(c);
         } else {
             // full information card
             float pw = W * 0.74f, ph = H * 0.74f;
@@ -2571,7 +2598,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         txt.setTextAlign(Paint.Align.CENTER);
         txt.setTextSize(H * 0.04f);
         txt.setColor(Color.WHITE);
-        c.drawText("TAP HERE TO JUMP", x, y + H * 0.13f, txt);
+        c.drawText(tutStep == T_BEAR ? "TAP, TAP AGAIN!" : "TAP HERE TO JUMP", x, y + H * 0.13f, txt);
     }
 
     /** Pulsing fingertip and the sprint meter. */
