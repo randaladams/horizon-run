@@ -17,7 +17,7 @@ After a crash you can **watch an ad to keep running** (once per run, with a shor
 
 New to the game? Tap **How to play** on the start screen for a 13-step practice run covering steering, sprinting, jumping (including a rock wall and a high jump over a bear), each kind of obstacle, snails and the options.
 
-**Buttons, not taps:** the start screen has a **START** button and a small **✕ EXIT** (top-left); the crash screen has **CONTINUE** (bottom-right). During a run, the faint **pause** button (top centre) or the back gesture opens a pause menu with **RESUME** and **END RUN**. Stray taps never start or end anything.
+**Buttons, not taps:** the start screen has a **START** button and a small **✕ EXIT** (top-left); the crash screen has **CONTINUE** (bottom-right). During a run, the faint **pause** button (bottom centre) or the back gesture opens a pause menu with **RESUME** and **END RUN**. Stray taps never start or end anything.
 
 ## Full version ($1.99 in-app purchase)
 

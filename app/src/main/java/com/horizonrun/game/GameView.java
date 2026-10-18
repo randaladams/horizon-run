@@ -2283,7 +2283,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 txt.setTextAlign(Paint.Align.CENTER);
                 txt.setTextSize(H * 0.032f);
                 txt.setColor(0xCC9CFFC8);
-                c.drawText("ZEN MODE  \u2022  press BACK twice to finish", cx, H - pad * 0.6f, txt);
+                c.drawText("ZEN MODE  \u2022  pause to finish", cx, pad + H * 0.02f, txt);
                 txt.setColor(Color.WHITE);
                 txt.setTextAlign(Paint.Align.LEFT);
             }
@@ -2339,12 +2339,6 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setTextSize(H * 0.13f);
             c.drawText("HORIZON RUN", cx, H * 0.36f, txt);
-            if (isFull()) {
-                txt.setTextSize(H * 0.032f);
-                txt.setColor(0xFFFFD45A);
-                c.drawText("FULL VERSION", cx + H * 0.52f, H * 0.255f, txt);
-                txt.setColor(Color.WHITE);
-            }
             if (holiday != Holidays.NONE) {
                 float bob = (float) Math.sin(menuTime * 2.5f) * H * 0.008f;
                 txt.setTextSize(H * 0.065f);
@@ -2352,28 +2346,37 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 c.drawText(Holidays.BANNER[holiday], cx, H * 0.2f + bob, txt);
                 txt.setColor(Color.WHITE);
             }
-            txt.setTextSize(H * 0.045f);
-            c.drawText("Tilt your phone left and right to steer", cx, H * 0.52f, txt);
-            c.drawText("Hold the RIGHT side to sprint  \u2022  tap the LEFT side to jump", cx, H * 0.6f, txt);
-            c.drawText("Dodge obstacles  \u2022  glowing snails slow you down  \u2022  "
-                    + Holidays.ITEMS[holiday].toLowerCase(Locale.US) + " score points", cx, H * 0.68f, txt);
-            txt.setTextSize(H * 0.032f);
+            // one line under the title: version + best score
+            String bestTxt = best > 0 ? "Best: " + best + " m" : "";
+            txt.setTextSize(H * 0.04f);
+            if (isFull()) {
+                String tag = "FULL VERSION";
+                String sep = best > 0 ? "   \u2022   " : "";
+                float wTag = txt.measureText(tag), wSep = txt.measureText(sep), wBest = txt.measureText(bestTxt);
+                float x0 = cx - (wTag + wSep + wBest) / 2f;
+                txt.setTextAlign(Paint.Align.LEFT);
+                txt.setColor(0xFFFFD45A);
+                c.drawText(tag, x0, H * 0.45f, txt);
+                txt.setColor(Color.WHITE);
+                c.drawText(sep + bestTxt, x0 + wTag, H * 0.45f, txt);
+                txt.setTextAlign(Paint.Align.CENTER);
+            } else if (best > 0) {
+                c.drawText(bestTxt, cx, H * 0.45f, txt);
+            }
+            // a single, short controls reminder (the tutorial covers the rest)
+            txt.setTextSize(H * 0.036f);
             txt.setColor(0xCCFFFFFF);
-            c.drawText("Sun / moon: light or dark mode  \u2022  Scores: your last 10 runs", cx, H * 0.735f, txt);
+            c.drawText("Tilt to steer  \u2022  tap LEFT to jump  \u2022  hold RIGHT to sprint", cx, H * 0.535f, txt);
             txt.setColor(Color.WHITE);
             float pulse = 0.5f + 0.5f * (float) Math.sin(menuTime * 4f);
             pill(c, startBtnL(), startBtnT(), startBtnR(), startBtnB(), 0xEE1E7A3C,
                     Color.argb((int) (150 + 105 * pulse), 140, 255, 170), "");
             txt.setTextAlign(Paint.Align.CENTER);
-            txt.setTextSize(H * 0.055f);
+            txt.setTextSize(H * 0.065f);
             txt.setColor(Color.WHITE);
             c.drawText(zenMode && isFull() ? "START ZEN RUN" : "START",
-                    cx, (startBtnT() + startBtnB()) * 0.5f + H * 0.019f, txt);
+                    cx, (startBtnT() + startBtnB()) * 0.5f + H * 0.023f, txt);
             pill(c, exitBtnL(), exitBtnT(), exitBtnR(), exitBtnB(), 0x55000000, 0x66FFFFFF, "\u2715  EXIT");
-            if (best > 0) {
-                txt.setTextSize(H * 0.035f);
-                c.drawText("Best: " + best + " m", cx, H * 0.445f, txt);
-            }
             if (tiltSensor == null) {
                 txt.setColor(0xFFFF8A80);
                 txt.setTextSize(H * 0.035f);
@@ -3031,10 +3034,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     // ---- start / exit / pause buttons ------------------------------------------------
     private static final float DLG_TOP = 0.28f;
-    private float startBtnL() { return cx - W * 0.14f; }
-    private float startBtnR() { return cx + W * 0.14f; }
-    private float startBtnT() { return H * 0.755f; }
-    private float startBtnB() { return H * 0.85f; }
+    private float startBtnL() { return cx - W * 0.17f; }
+    private float startBtnR() { return cx + W * 0.17f; }
+    private float startBtnT() { return H * 0.61f; }
+    private float startBtnB() { return H * 0.74f; }
     private float exitBtnL() { return Math.max(W * 0.035f, H * 0.05f); }
     private float exitBtnR() { return exitBtnL() + W * 0.11f; }
     private float exitBtnT() { return Math.max(W * 0.02f, H * 0.04f); }
@@ -3052,7 +3055,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private float pEndL() { return cx + W * 0.02f; }
     private float pEndR() { return cx + W * 0.22f; }
     private float pauseX() { return cx; }
-    private float pauseY() { return Math.max(W * 0.02f, H * 0.04f) + H * 0.045f; }
+    private float pauseY() { return H - Math.max(W * 0.02f, H * 0.04f) - H * 0.05f; }
     private float pauseR() { return H * 0.045f; }
 
     private boolean inPauseBtn(float x, float y) {
@@ -3125,7 +3128,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private void drawToasts(Canvas c) {
         if (badgeToastTimer > 0f && isFull()) {
             float a = clamp(badgeToastTimer * 2f, 0f, 1f);
-            float bw = W * 0.36f, bh = H * 0.1f, top = H * 0.17f;   // below the pause button
+            float bw = W * 0.36f, bh = H * 0.1f, top = H * 0.06f;
             rect.set(cx - bw / 2, top, cx + bw / 2, top + bh);
             p.setStyle(Paint.Style.FILL);
             p.setColor(Color.argb((int) (220 * a), 40, 30, 0));
