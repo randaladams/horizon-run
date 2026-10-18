@@ -75,7 +75,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         boolean decor() { return type == GRASS || type == FLOWER; }
     }
 
-    private static final int MENU = 0, RUN = 1, CRASH = 2;
+    private static final int MENU = 0, RUN = 1, CRASH = 2, TUTORIAL = 3;
 
     // ---- threading / system -------------------------------------------------------
     private final SurfaceHolder holder;
@@ -122,6 +122,21 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private float blueFlash, animTime;
     private float resetConfirm;      // >0 while waiting for the second tap
     private volatile boolean resetTap;
+
+    // ---- tutorial ---------------------------------------------------------------
+    private volatile boolean tutStart, tutSkip;
+    private int tutStep;
+    private float tutTimer;          // time in the current step
+    private float tutHold;           // how long the step's condition has been met
+    private float tutWait = -1f;     // >=0 while showing "Nice!" before the next step
+    private float tutDelay;          // countdown before spawning the step's object
+    private float tutMsgTimer;
+    private String tutMsg = "";
+    private boolean tutMsgGood;
+    private boolean tutSprinted;
+    private Obj tutObj;
+    private float sceneryAcc;
+    private static final int TUT_STEPS = 10;
     private static final float SNAIL_SLOW = 25f;   // seconds of speed build-up removed
 
     // ---- rendering ----------------------------------------------------------------
@@ -328,15 +343,24 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     public boolean onTouchEvent(MotionEvent e) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                if (state != RUN) {
+                if (state == TUTORIAL) {
+                    if (inRect(e, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB())) {
+                        tutSkip = true;
+                        return true;
+                    }
+                }
+                if (state == MENU && inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) {
+                    tutStart = true;
+                    return true;
+                }
+                if (state == MENU || state == CRASH) {
                     float dx = e.getX() - themeBtnX(), dy = e.getY() - themeBtnY();
                     float r = themeBtnR() * 1.8f;
                     if (dx * dx + dy * dy < r * r) {
                         toggleTheme = true;
                         return true;
                     }
-                    if (e.getX() >= resetBtnL() - H * 0.03f && e.getX() <= resetBtnR() + H * 0.03f
-                            && e.getY() >= resetBtnT() - H * 0.03f && e.getY() <= resetBtnB() + H * 0.03f) {
+                    if (inRect(e, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB())) {
                         resetTap = true;
                         return true;
                     }
@@ -394,7 +418,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         elapsed = 0;
         baseTime = 0;
         pickupAcc = 0;
-        nextPickup = 220f + rnd.nextFloat() * 120f;
+        nextPickup = 7f + rnd.nextFloat() * 3f;   // seconds
         blueFlash = 0;
         speed = BASE_SPEED;
         boost = 0;
@@ -449,6 +473,16 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             dark = !dark;
             prefs.edit().putBoolean("dark", dark).apply();
             themeDirty = true;
+        }
+
+        if (tutStart) {
+            tutStart = false;
+            if (state == MENU) startTutorial();
+        }
+        if (state == TUTORIAL) {
+            updateTutorial(dt);
+            tapped = false;
+            return;
         }
 
         if (state == MENU) {
@@ -529,11 +563,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             aimAcc -= aimGap;
             spawnObstacle(SPAWN_Z - aimAcc, true);
         }
-        // Slow-down snails: rarer early on, more useful once you're flying.
-        pickupAcc += dz;
-        if (pickupAcc >= nextPickup && baseTime > 12f) {
+        // Slow-down snails, on a timer that speeds up as the base speed climbs:
+        // every 5-9 s at the start, every ~3-5 s near top speed.
+        pickupAcc += dt;
+        if (pickupAcc >= nextPickup && elapsed > 6f) {
             pickupAcc = 0;
-            nextPickup = 350f + rnd.nextFloat() * 300f;
+            float fast = clamp((base - BASE_SPEED) / (MAX_BASE - BASE_SPEED), 0f, 1f);
+            nextPickup = (5f + rnd.nextFloat() * 4f) * (1f - 0.45f * fast);
             spawnSnail(SPAWN_Z);
         }
         blueFlash = Math.max(0f, blueFlash - dt * 1.5f);
@@ -611,7 +647,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             if (gone) objs.remove(i);
         }
         // in the menu, keep the scene populated
-        if (!collide) {
+        if (state == MENU) {
             spawnAcc += dz;
             float g = 12f * (48f / (2f * FIELD));
             while (spawnAcc >= g) { spawnAcc -= g; spawnObstacle(SPAWN_Z, false); }
@@ -795,7 +831,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private float eye() {
-        return EYE + (state == RUN ? (float) Math.sin(bobPhase) * 0.05f : 0f);
+        return EYE + ((state == RUN || state == TUTORIAL) ? (float) Math.sin(bobPhase) * 0.05f : 0f);
     }
 
     private float projX(float dx, float z) { return cx + f * dx / z; }
@@ -1326,6 +1362,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private void drawHud(Canvas c) {
         float pad = Math.max(W * 0.035f, H * 0.05f);
+        if (state == TUTORIAL) drawTutorialHud(c);
         txt.setTextAlign(Paint.Align.LEFT);
 
         if (state == RUN || state == CRASH) {
@@ -1436,6 +1473,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             drawThemeButton(c);
             drawResetButton(c);
         }
+        if (state == MENU) drawHowButton(c);
 
         // soft blue wash when a snail slows you down
         if (blueFlash > 0f) {
@@ -1450,6 +1488,417 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             p.setColor(Color.argb((int) (goldFlash * goldFlash * 150), 255, 205, 60));
             c.drawRect(0, 0, W, H, p);
         }
+    }
+
+    // ================================================================================
+    // Tutorial: a safe practice track that walks through every control and obstacle
+    // ================================================================================
+
+    private static final String[] TUT_TITLE = {
+            "Tilt your phone LEFT",
+            "Now tilt RIGHT",
+            "Hold a finger anywhere to SPRINT",
+            "Lift your finger to ease off",
+            "Steer around the rock",
+            "Low branches hang at head height",
+            "Animals move!",
+            "Run through the glowing snail",
+            "Speed & score",
+            "Options"};
+    private static final String[] TUT_BODY = {
+            "Hold it like a steering wheel and tip the left side down.",
+            "The more you tilt, the faster you slide sideways.",
+            "Keep holding — the longer you hold, the faster you go.",
+            "You drop back to your base speed.",
+            "Obstacles rise over the curved horizon and grow as they get close.",
+            "You can't duck — steer past the end of the limb.",
+            "Watch which way the deer runs and pass behind it.",
+            "Snails knock your base speed back down. Steer into it!",
+            "", ""};
+    private static final String[][] TUT_CARD = {
+            {},{},{},{},{},{},{},{},
+            {"Your score is the distance you run, in metres.",
+             "Your base speed keeps rising the longer you survive.",
+             "Sprinting adds speed on top — let go to fall back to base speed.",
+             "Near misses earn +25. Snails give +10 and slow you down.",
+             "Pass your best score and the screen flashes gold."},
+            {"Sun / moon button (start screen): light or dark mode.",
+             "Reset Best Score (bottom-left, tap twice): clears your record.",
+             "How To Play (bottom-right): replay this tutorial any time.",
+             "Hold the phone level to run straight.",
+             "Snails turn up more often as you get faster — use them!"}};
+
+    private static final float TUT_BASE = 13f;
+
+    private void startTutorial() {
+        objs.clear();
+        px = 0;
+        distance = 0;
+        speed = TUT_BASE;
+        boost = 0;
+        latVel = 0;
+        baseTime = 0;
+        flash = 0;
+        shake = 0;
+        blueFlash = 0;
+        goldFlash = 0;
+        msgTimer = 0;
+        sceneryAcc = 0;
+        decorAcc = 0;
+        tutStep = 0;
+        enterTutStep();
+        for (float z = 2f; z < 80f; z += 1f) { spawnDecor(z); spawnDecor(z); }
+        for (float z = 20f; z < SPAWN_Z; z += 7f) spawnScenery(z);
+        state = TUTORIAL;
+    }
+
+    private void enterTutStep() {
+        tutTimer = 0;
+        tutHold = 0;
+        tutWait = -1f;
+        tutObj = null;
+        tutDelay = 0.8f;
+        tutSprinted = false;
+    }
+
+    private void finishTutorial() {
+        prefs.edit().putBoolean("tutSeen", true).apply();
+        resetRun();
+        state = MENU;
+        menuTime = 0;
+    }
+
+    /** Trees and rocks well off to the sides so the practice track isn't empty. */
+    private void spawnScenery(float z) {
+        int[] kinds = {PINE, PINE, OAK, ROCK};
+        float side = rnd.nextBoolean() ? 1f : -1f;
+        Obj o = make(kinds[rnd.nextInt(kinds.length)], px + side * (16f + rnd.nextFloat() * 45f), z);
+        objs.add(o);
+    }
+
+    private void tutSay(String m, boolean good, float time) {
+        tutMsg = m;
+        tutMsgGood = good;
+        tutMsgTimer = time;
+    }
+
+    private void tutSuccess() {
+        tutSay(tutStep < 7 ? "NICE!" : "GOT IT!", true, 1.1f);
+        tutWait = 1.1f;
+    }
+
+    private void updateTutorial(float dt) {
+        if (tutSkip) {
+            tutSkip = false;
+            finishTutorial();
+            return;
+        }
+        tutTimer += dt;
+        if (tutMsgTimer > 0) tutMsgTimer -= dt;
+        flash = Math.max(0f, flash - dt * 2f);
+        shake = Math.max(0f, shake - dt * 1.6f);
+        blueFlash = Math.max(0f, blueFlash - dt * 1.5f);
+
+        // same running physics as a real run, at a gentle fixed base speed
+        if (touching) boost = Math.min(boost + BOOST_GAIN * dt, MAX_BOOST);
+        else boost = Math.max(0f, boost - BOOST_DECAY * dt);
+        speed += (TUT_BASE + boost - speed) * Math.min(1f, dt * 3f);
+        float latMax = 7f + speed * 0.06f;
+        latVel += (steer * latMax - latVel) * Math.min(1f, dt * 8f);
+        px += latVel * dt;
+        roll += (-steer * 5f - roll) * Math.min(1f, dt * 6f);
+        float dz = speed * dt;
+        distance += dz;
+        bobPhase += dz * 0.55f;
+        advanceWorld(dz, dt, false);
+
+        sceneryAcc += dz;
+        while (sceneryAcc >= 7f) { sceneryAcc -= 7f; spawnScenery(SPAWN_Z); }
+        decorAcc += dz;
+        while (decorAcc >= 1f) { decorAcc -= 1f; spawnDecor(80f); spawnDecor(80f); }
+
+        // waiting to move on after a success
+        if (tutWait >= 0f) {
+            tutWait -= dt;
+            if (tutWait < 0f) {
+                tutStep++;
+                enterTutStep();
+            }
+            return;
+        }
+
+        switch (tutStep) {
+            case 0:   // tilt left
+                tutHold = steer < -0.4f ? tutHold + dt : 0f;
+                if (tutHold > 0.5f) tutSuccess();
+                break;
+            case 1:   // tilt right
+                tutHold = steer > 0.4f ? tutHold + dt : 0f;
+                if (tutHold > 0.5f) tutSuccess();
+                break;
+            case 2:   // sprint
+                if (boost >= 18f) tutSuccess();
+                break;
+            case 3:   // release
+                if (!touching && boost < 2f && tutTimer > 0.4f) tutSuccess();
+                break;
+            case 4: case 5: case 6: case 7:
+                updateTutChallenge(dt);
+                break;
+            default:  // info cards
+                if (tapped && tutTimer > 0.5f) {
+                    if (tutStep >= TUT_STEPS - 1) finishTutorial();
+                    else { tutStep++; enterTutStep(); }
+                }
+                break;
+        }
+    }
+
+    private void updateTutChallenge(float dt) {
+        if (tutObj == null) {
+            tutDelay -= dt;
+            if (tutDelay > 0f) return;
+            float z = 85f;
+            // clear any scenery that drifted into the lane
+            for (int i = objs.size() - 1; i >= 0; i--) {
+                Obj b = objs.get(i);
+                if (b.solid() && Math.abs(b.x - px) < 14f) objs.remove(i);
+            }
+            switch (tutStep) {
+                case 4:
+                    tutObj = make(ROCK, px, z);
+                    tutObj.size = 1.5f;
+                    tutObj.radius = 1.35f;
+                    objs.add(tutObj);
+                    break;
+                case 5:
+                    tutObj = make(BRANCH, px, z);
+                    objs.add(tutObj);
+                    break;
+                case 6: {
+                    tutObj = make(DEER, px, z);
+                    // make sure it crosses right in front of the player
+                    float dir = Math.signum(tutObj.vx);
+                    float eta = z / Math.max(speed, 1f);
+                    tutObj.x = px - tutObj.vx * eta + dir * 0.2f;
+                    objs.add(tutObj);
+                    break;
+                }
+                default:
+                    spawnSnail(z);
+                    tutObj = objs.get(objs.size() - 1);
+                    break;
+            }
+            return;
+        }
+
+        if (!tutObj.judged && tutObj.z < HIT_Z) {
+            tutObj.judged = true;
+            boolean ok;
+            if (tutObj.type == SNAIL) {
+                ok = Math.abs(tutObj.x - px) < 1.3f + PLAYER_R;
+                if (ok) {
+                    collectSnail();
+                    objs.remove(tutObj);
+                }
+            } else {
+                ok = clearance(tutObj) >= 0f;
+            }
+            if (ok) {
+                tutSuccess();
+            } else {
+                if (tutObj.type == SNAIL) {
+                    tutSay("Missed it — steer right into it. Try again!", false, 2.2f);
+                } else {
+                    tutSay("Ouch! That would have been a crash. Try again.", false, 2.2f);
+                    flash = 0.7f;
+                    shake = 0.5f;
+                    try {
+                        Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
+                        if (v != null && v.hasVibrator()) {
+                            v.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE));
+                        }
+                    } catch (Exception ignored) { }
+                }
+                tutObj = null;
+                tutDelay = 1.6f;
+            }
+        }
+    }
+
+    private boolean inRect(MotionEvent e, float l, float t, float r, float b) {
+        float m = H * 0.03f;
+        return e.getX() >= l - m && e.getX() <= r + m && e.getY() >= t - m && e.getY() <= b + m;
+    }
+
+    // "How to play" button, bottom-right of the start screen
+    private float howBtnR() { return W - Math.max(W * 0.035f, H * 0.05f); }
+    private float howBtnL() { return howBtnR() - W * 0.2f; }
+    private float howBtnT() { return resetBtnT(); }
+    private float howBtnB() { return resetBtnB(); }
+
+    private void pill(Canvas c, float l, float t, float r, float b, int fill, int stroke, String label) {
+        rect.set(l, t, r, b);
+        float rr = rect.height() * 0.5f;
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(fill);
+        c.drawRoundRect(rect, rr, rr, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(2f, H * 0.004f));
+        p.setColor(stroke);
+        c.drawRoundRect(rect, rr, rr, p);
+        p.setStyle(Paint.Style.FILL);
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.032f);
+        txt.setColor(Color.WHITE);
+        c.drawText(label, rect.centerX(), rect.centerY() + H * 0.011f, txt);
+    }
+
+    private void drawHowButton(Canvas c) {
+        boolean seen = prefs.getBoolean("tutSeen", false);
+        int stroke = seen ? 0x99FFFFFF
+                : Color.argb((int) (160 + 95 * (0.5f + 0.5f * (float) Math.sin(animTime * 4f))), 255, 212, 70);
+        pill(c, howBtnL(), howBtnT(), howBtnR(), howBtnB(), 0x66000000, stroke, "HOW TO PLAY");
+    }
+
+    private void drawTutorialHud(Canvas c) {
+        float pad = Math.max(W * 0.035f, H * 0.05f);
+        boolean card = tutStep >= 8;
+
+        if (!card) {
+            // instruction panel at the top
+            float pw = W * 0.72f;
+            rect.set(cx - pw / 2, H * 0.035f, cx + pw / 2, H * 0.255f);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0x99000000);
+            c.drawRoundRect(rect, H * 0.03f, H * 0.03f, p);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setColor(0xFFFFD45A);
+            txt.setTextSize(H * 0.03f);
+            c.drawText("PRACTICE  •  STEP " + (tutStep + 1) + " OF " + TUT_STEPS, cx, H * 0.08f, txt);
+            txt.setColor(Color.WHITE);
+            txt.setTextSize(H * 0.06f);
+            c.drawText(TUT_TITLE[tutStep], cx, H * 0.155f, txt);
+            txt.setTextSize(H * 0.035f);
+            txt.setColor(0xDDFFFFFF);
+            c.drawText(TUT_BODY[tutStep], cx, H * 0.215f, txt);
+            txt.setColor(Color.WHITE);
+
+            if (tutStep <= 1 && tutWait < 0f) drawTiltHint(c, tutStep == 0 ? -1f : 1f);
+            if (tutStep == 2 || tutStep == 3) drawSprintHint(c, tutStep == 2);
+        } else {
+            // full information card
+            float pw = W * 0.74f, ph = H * 0.74f;
+            rect.set(cx - pw / 2, H * 0.08f, cx + pw / 2, H * 0.08f + ph);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xCC000000);
+            c.drawRoundRect(rect, H * 0.04f, H * 0.04f, p);
+            float left = rect.left + pw * 0.07f;
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setColor(0xFFFFD45A);
+            txt.setTextSize(H * 0.03f);
+            c.drawText("STEP " + (tutStep + 1) + " OF " + TUT_STEPS, cx, rect.top + H * 0.07f, txt);
+            txt.setColor(Color.WHITE);
+            txt.setTextSize(H * 0.07f);
+            c.drawText(TUT_TITLE[tutStep], cx, rect.top + H * 0.15f, txt);
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setTextSize(H * 0.038f);
+            String[] lines = TUT_CARD[tutStep];
+            for (int i = 0; i < lines.length; i++) {
+                float y = rect.top + H * 0.25f + i * H * 0.075f;
+                p.setColor(0xFFFFD45A);
+                c.drawCircle(left, y - H * 0.012f, H * 0.009f, p);
+                c.drawText(lines[i], left + H * 0.035f, y, txt);
+            }
+            float pulse = 0.6f + 0.4f * (float) Math.sin(animTime * 4f);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setColor(Color.argb((int) (255 * pulse), 255, 220, 120));
+            txt.setTextSize(H * 0.045f);
+            c.drawText(tutStep >= TUT_STEPS - 1 ? "TAP TO FINISH" : "TAP TO CONTINUE",
+                    cx, rect.bottom - H * 0.05f, txt);
+            txt.setColor(Color.WHITE);
+        }
+
+        // speed + sprint meter, as in a real run
+        txt.setTextAlign(Paint.Align.RIGHT);
+        txt.setTextSize(H * 0.045f);
+        if (!card) c.drawText(Math.round(speed * 3.6f) + " km/h", W - pad, H * 0.33f, txt);
+
+        // feedback
+        if (tutMsgTimer > 0f) {
+            float a = clamp(tutMsgTimer * 2f, 0f, 1f);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(tutMsgGood ? H * 0.11f : H * 0.05f);
+            txt.setColor(tutMsgGood ? Color.argb((int) (255 * a), 140, 255, 150)
+                                    : Color.argb((int) (255 * a), 255, 150, 140));
+            c.drawText(tutMsg, cx, H * 0.5f, txt);
+            txt.setColor(Color.WHITE);
+        }
+
+        pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF, "SKIP TUTORIAL");
+    }
+
+    /** A little phone that rocks the way you should tilt, plus big arrows. */
+    private void drawTiltHint(Canvas c, float dir) {
+        float x = cx, y = H * 0.6f;
+        float wobble = (float) Math.sin(animTime * 3f);
+        float ang = dir * (14f + 10f * (0.5f + 0.5f * wobble));
+        float pw = H * 0.34f, ph = H * 0.17f;
+        c.save();
+        c.rotate(ang, x, y);
+        rect.set(x - pw / 2, y - ph / 2, x + pw / 2, y + ph / 2);
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0xAA101828);
+        c.drawRoundRect(rect, ph * 0.18f, ph * 0.18f, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(3f, H * 0.006f));
+        p.setColor(0xEEFFFFFF);
+        c.drawRoundRect(rect, ph * 0.18f, ph * 0.18f, p);
+        c.restore();
+
+        // chevrons pointing the way
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeWidth(Math.max(4f, H * 0.012f));
+        for (int i = 0; i < 3; i++) {
+            float phase = (animTime * 2f + i * 0.33f) % 1f;
+            p.setColor(Color.argb((int) (230 * (1f - Math.abs(phase - 0.5f) * 2f)), 255, 212, 70));
+            float ax = x + dir * (pw * 0.75f + i * H * 0.07f);
+            float s = H * 0.04f;
+            c.drawLine(ax - dir * s, y - s, ax, y, p);
+            c.drawLine(ax, y, ax - dir * s, y + s, p);
+        }
+        p.setStyle(Paint.Style.FILL);
+    }
+
+    /** Pulsing fingertip and the sprint meter. */
+    private void drawSprintHint(Canvas c, boolean hold) {
+        float x = cx, y = H * 0.62f;
+        if (hold) {
+            float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 5f);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(3f, H * 0.006f));
+            p.setColor(Color.argb((int) (120 + 120 * pulse), 255, 212, 70));
+            c.drawCircle(x, y, H * (0.06f + 0.03f * pulse), p);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(touching ? 0xDDFFD45A : 0x88FFFFFF);
+            c.drawCircle(x, y, H * 0.045f, p);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * 0.035f);
+            c.drawText(touching ? "KEEP HOLDING..." : "TOUCH & HOLD", x, y + H * 0.12f, txt);
+        }
+        float bw = W * 0.34f, bh = H * 0.028f;
+        float bx = cx - bw / 2, by = H * 0.8f;
+        rect.set(bx, by, bx + bw, by + bh);
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0x77000000);
+        c.drawRoundRect(rect, bh, bh, p);
+        p.setColor(touching ? 0xFFFFC94A : 0xFFFFE9A8);
+        rect.set(bx, by, bx + bw * clamp(boost / MAX_BOOST, 0f, 1f), by + bh);
+        c.drawRoundRect(rect, bh, bh, p);
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.03f);
+        c.drawText("SPRINT METER", cx, by - H * 0.02f, txt);
     }
 
     // ---- reset-best button (bottom-left of the menu and crash screens) ------------
