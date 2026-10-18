@@ -54,6 +54,7 @@ public class Billing {
             client = BillingClient.newBuilder(activity)
                     .setListener(this::onPurchasesUpdated)
                     .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
+                    .enableAutoServiceReconnection()   // Billing Library 8: reconnects by itself
                     .build();
             connect();
         } catch (Throwable t) {
@@ -102,10 +103,11 @@ public class Billing {
                         .setProductType(BillingClient.ProductType.INAPP)
                         .build()))
                 .build();
-        client.queryProductDetailsAsync(params, (result, list) -> {
-            if (result.getResponseCode() == BillingClient.BillingResponseCode.OK && list != null && !list.isEmpty()) {
-                product = list.get(0);
-            }
+        // Billing Library 8: the callback gets a QueryProductDetailsResult
+        client.queryProductDetailsAsync(params, (result, details) -> {
+            if (result.getResponseCode() != BillingClient.BillingResponseCode.OK || details == null) return;
+            List<ProductDetails> list = details.getProductDetailsList();
+            if (list != null && !list.isEmpty()) product = list.get(0);
         });
     }
 
