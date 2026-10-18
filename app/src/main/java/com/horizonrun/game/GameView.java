@@ -923,8 +923,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     /** Start a fresh run, first showing an interstitial if one is due. */
     private void requestNewRun() {
         gamesSinceAd++;
-        if (gamesSinceAd > GAMES_PER_AD && ads != null && ads.interstitialReady()) {
-            gamesSinceAd = 1;
+        if (gamesSinceAd >= GAMES_PER_AD && ads != null && ads.interstitialReady()) {
+            gamesSinceAd = 0;
             waitingForAd = true;
             pendingStartAfterAd = true;
             ads.showInterstitial();
