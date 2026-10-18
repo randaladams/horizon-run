@@ -6,6 +6,7 @@ import android.content.res.Configuration;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
+import android.media.SoundPool;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -189,6 +190,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     // ---- sound: a short synthesized chime (no audio files needed) ------------------
     private AudioTrack chime;
+    private SoundPool sfx;
+    private int sFlower, sBouquet, sGolden, sJump, sSnail, sCrash, sRevive, sChime;
+    private boolean soundOn = true;
+    private volatile boolean toggleSound;
 
     // ---- ads ----------------------------------------------------------------------
     private Ads ads;
@@ -289,7 +294,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         bestLine.type = BESTLINE;
         refreshHoliday();
         loadHistory();
-        buildChime();
+        loadSounds();
 
         sensorManager = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
         Sensor g = sensorManager != null ? sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY) : null;
@@ -445,6 +450,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                         toggleTheme = true;
                         return true;
                     }
+                    float sx = e.getX() - soundBtnX();
+                    if (sx * sx + dy * dy < r * r) {
+                        toggleSound = true;
+                        return true;
+                    }
                     if (inRect(e, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB())) {
                         scoresReq = true;
                         return true;
@@ -497,6 +507,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             if (!airborne) {
                 airborne = true;
                 jumpV = JUMP_V;
+                play(sJump, 0.7f);
                 if (state == TUTORIAL) tutJumped = true;
             }
         }
@@ -639,6 +650,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
         if (msgTimer > 0 && state != RUN) msgTimer -= dt;
 
+        if (toggleSound) {
+            toggleSound = false;
+            soundOn = !soundOn;
+            prefs.edit().putBoolean("sound", soundOn).apply();
+            if (soundOn) play(sFlower, 0.8f);
+        }
         if (toggleTheme) {
             toggleTheme = false;
             dark = !dark;
@@ -841,6 +858,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     public void release() {
+        if (sfx != null) {
+            try { sfx.release(); } catch (Exception ignored) { }
+            sfx = null;
+        }
         if (chime != null) {
             try { chime.release(); } catch (Exception ignored) { }
             chime = null;
@@ -909,7 +930,41 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
     }
 
+    private void loadSounds() {
+        soundOn = prefs.getBoolean("sound", true);
+        try {
+            sfx = new SoundPool.Builder()
+                    .setMaxStreams(6)
+                    .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_GAME)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build())
+                    .build();
+            Context ctx = getContext();
+            sFlower = sfx.load(ctx, R.raw.sfx_flower, 1);
+            sBouquet = sfx.load(ctx, R.raw.sfx_bouquet, 1);
+            sGolden = sfx.load(ctx, R.raw.sfx_golden, 1);
+            sJump = sfx.load(ctx, R.raw.sfx_jump, 1);
+            sSnail = sfx.load(ctx, R.raw.sfx_snail, 1);
+            sCrash = sfx.load(ctx, R.raw.sfx_crash, 1);
+            sRevive = sfx.load(ctx, R.raw.sfx_revive, 1);
+            sChime = sfx.load(ctx, R.raw.sfx_chime, 1);
+        } catch (Exception e) {
+            sfx = null;
+        }
+    }
+
+    private void play(int id, float vol) {
+        if (!soundOn || sfx == null || id == 0) return;
+        try { sfx.play(id, vol, vol, 1, 0, 1f); } catch (Exception ignored) { }
+    }
+
     private void playChime() {
+        play(sChime, 1f);
+    }
+
+    @SuppressWarnings("unused")
+    private void playOldChime() {
         AudioTrack t = chime;
         if (t == null) return;
         try {
@@ -986,6 +1041,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         flash = 0;
         state = RUN;
         msg = "KEEP GOING!";
+        play(sRevive, 1f);
         msgTimer = 1.5f;
     }
 
@@ -1082,6 +1138,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void crash() {
+        play(sCrash, 0.8f);
         state = CRASH;
         crashTimer = 0;
         shake = 1f;
@@ -1991,6 +2048,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         if (state == MENU || (state == CRASH && crashTimer > 0.5f)) {
             drawThemeButton(c);
+            drawSoundButton(c);
             pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF, "SCORES");
         }
         if (state == SCORES) drawScoreboard(c);
@@ -2286,6 +2344,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 if (tutObj.type == SNAIL) {
                     tutSay("Missed it — steer right into it. Try again!", false, 2.2f);
                 } else {
+                    play(sCrash, 0.5f);
                     if (tutStep != T_WALL) tutSay("Ouch! That would have been a crash. Try again.", false, 2.2f);
                     flash = 0.7f;
                     shake = 0.5f;
@@ -2741,6 +2800,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void collectSnail() {
+        play(sSnail, 0.8f);
         float before = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
         baseTime = Math.max(0f, Math.min(baseTime, (MAX_BASE - BASE_SPEED) / SPEED_GAIN) - SNAIL_SLOW);
         float after = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
@@ -2894,6 +2954,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             popTimer = 1.3f;
             goldFlash = Math.max(goldFlash, 0.6f);
             buzz(70);
+            play(sGolden, 1f);
             return;
         }
         bonus += FLOWER_PTS;
@@ -2908,8 +2969,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 popColor = 0xFFFFD45A;
                 popTimer = 1.4f;
                 buzz(60);
+                play(sBouquet, 1f);
+                return;
             }
         }
+        play(sFlower, 0.8f);
     }
 
     private void buzz(int ms) {
@@ -3442,6 +3506,45 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 c.restore();
             }
         }
+    }
+
+    private float soundBtnX() { return themeBtnX() - themeBtnR() * 4.2f; }
+
+    /** Speaker icon: tap to turn sound effects on or off. */
+    private void drawSoundButton(Canvas c) {
+        float x = soundBtnX(), y = themeBtnY(), r = themeBtnR();
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0x55000000);
+        c.drawCircle(x, y, r * 1.45f, p);
+        p.setColor(Color.WHITE);
+        path.reset();                                    // speaker body + cone
+        path.moveTo(x - r * 0.7f, y - r * 0.28f);
+        path.lineTo(x - r * 0.35f, y - r * 0.28f);
+        path.lineTo(x + r * 0.1f, y - r * 0.7f);
+        path.lineTo(x + r * 0.1f, y + r * 0.7f);
+        path.lineTo(x - r * 0.35f, y + r * 0.28f);
+        path.lineTo(x - r * 0.7f, y + r * 0.28f);
+        path.close();
+        c.drawPath(path, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeWidth(r * 0.13f);
+        if (soundOn) {
+            rect.set(x - r * 0.2f, y - r * 0.45f, x + r * 0.7f, y + r * 0.45f);
+            c.drawArc(rect, -50f, 100f, false, p);
+            rect.set(x - r * 0.45f, y - r * 0.8f, x + r * 1.0f, y + r * 0.8f);
+            c.drawArc(rect, -50f, 100f, false, p);
+        } else {
+            p.setColor(0xFFFF8A80);
+            c.drawLine(x + r * 0.35f, y - r * 0.35f, x + r * 0.95f, y + r * 0.35f, p);
+            c.drawLine(x + r * 0.95f, y - r * 0.35f, x + r * 0.35f, y + r * 0.35f, p);
+        }
+        p.setStyle(Paint.Style.FILL);
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.028f);
+        txt.setColor(0xDDFFFFFF);
+        c.drawText(soundOn ? "SOUND" : "MUTED", x, y + r * 1.45f + H * 0.04f, txt);
+        txt.setColor(Color.WHITE);
     }
 
     /** Sun (light mode) or moon (dark mode); tap to switch. */
