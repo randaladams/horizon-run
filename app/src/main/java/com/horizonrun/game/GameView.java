@@ -2,6 +2,8 @@ package com.horizonrun.game;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
+import android.speech.tts.TextToSpeech;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -24,6 +26,7 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.Random;
 
 /**
@@ -100,10 +103,15 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private float elapsed;       // seconds run
     private float speed = BASE_SPEED, boost;
     private float steer, latVel, roll;
-    private float spawnAcc, decorAcc, rowAcc, nextRow = 220f;
+    private float spawnAcc, aimAcc, decorAcc, rowAcc, nextRow = 220f;
+    private static final float FIELD = 60f;   // obstacles fill +/- this many metres sideways
     private float bobPhase;
     private float shake, crashTimer, flash;
     private int bonus, best;
+    private int bestAtStart;        // best score when this run began
+    private boolean passedBest;     // already beat the old best during this run
+    private boolean newHigh;        // the finished run set a new high score
+    private float goldFlash;
     private float msgTimer;
     private String msg = "";
     private float menuTime;
@@ -120,9 +128,52 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private final float[] cloudX = new float[7], cloudY = new float[7], cloudS = new float[7];
     private final float[] starX = new float[60], starY = new float[60];
 
-    private static final int HAZE = 0xFFBFDDF5;
-    private static final int GROUND_A = 0xFF4F9A3F;
-    private static final int GROUND_B = 0xFF5BA947;
+    // ---- light / dark theme -------------------------------------------------------
+    private boolean dark;
+    private volatile boolean themeDirty = true;
+    private volatile boolean toggleTheme;
+    private int HAZE, GROUND_A, GROUND_B;
+    private int starCol, cloudCol, planetCol, ringCol, glowCol, bgCol;
+    private int[] skyCols;
+
+    private TextToSpeech tts;
+    private boolean ttsReady;
+
+    private void applyTheme() {
+        if (dark) {
+            HAZE = 0xFF22335A;
+            GROUND_A = 0xFF1E3B2A;
+            GROUND_B = 0xFF234530;
+            skyCols = new int[]{0xFF02040C, 0xFF07112A, 0xFF13244A, HAZE};
+            starCol = 0xE6FFFFFF;
+            cloudCol = 0x3A8FA6D6;
+            planetCol = 0xFFD8DDE8;
+            ringCol = 0x99C9D3E8;
+            glowCol = 0xFF7FA8FF;
+            bgCol = 0xFF02040C;
+        } else {
+            HAZE = 0xFFBFDDF5;
+            GROUND_A = 0xFF4F9A3F;
+            GROUND_B = 0xFF5BA947;
+            skyCols = new int[]{0xFF0E2457, 0xFF2F64B8, 0xFF8EC6F2, HAZE};
+            starCol = 0x66FFFFFF;
+            cloudCol = 0xD9FFFFFF;
+            planetCol = 0xFFE9D9B6;
+            ringCol = 0xAAF3E6C8;
+            glowCol = 0xFFFFFFFF;
+            bgCol = 0xFF0E2457;
+        }
+        if (H > 1) {
+            sky.setShader(new LinearGradient(0, 0, 0, horizonY(0f) + H * 0.05f,
+                    skyCols, new float[]{0f, 0.45f, 0.85f, 1f}, Shader.TileMode.CLAMP));
+        }
+        themeDirty = false;
+    }
+
+    /** Theme toggle button (top-right corner on the menu and crash screens). */
+    private float themeBtnX() { return W - Math.max(W * 0.035f, H * 0.05f) - H * 0.055f; }
+    private float themeBtnY() { return Math.max(W * 0.035f, H * 0.05f) + H * 0.055f; }
+    private float themeBtnR() { return H * 0.055f; }
 
     public GameView(Context ctx) {
         super(ctx);
@@ -132,6 +183,19 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         prefs = ctx.getSharedPreferences("horizon_run", Context.MODE_PRIVATE);
         best = prefs.getInt("best", 0);
+        // Start in the phone's own light/dark setting until the player picks one.
+        int night = ctx.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        dark = prefs.getBoolean("dark", night == Configuration.UI_MODE_NIGHT_YES);
+        applyTheme();
+
+        try {
+            tts = new TextToSpeech(ctx, status -> {
+                if (status == TextToSpeech.SUCCESS && tts != null) {
+                    tts.setLanguage(Locale.getDefault());
+                    ttsReady = true;
+                }
+            });
+        } catch (Exception ignored) { }
 
         sensorManager = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
         Sensor g = sensorManager != null ? sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY) : null;
@@ -194,10 +258,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         cy = H * 0.30f;
         f = W * 0.5f;                      // roughly a 90 degree field of view
         uMax = 0.75f * (W * 0.5f) / f + 0.45f;
-        float horizonTop = horizonY(0f);
-        sky.setShader(new LinearGradient(0, 0, 0, horizonTop + H * 0.05f,
-                new int[]{0xFF0E2457, 0xFF2F64B8, 0xFF8EC6F2, HAZE},
-                new float[]{0f, 0.45f, 0.85f, 1f}, Shader.TileMode.CLAMP));
+        themeDirty = true;
         Display d = getDisplay();
         if (d != null) rotation = d.getRotation();
     }
@@ -259,6 +320,17 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     public boolean onTouchEvent(MotionEvent e) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                if (state != RUN) {
+                    float dx = e.getX() - themeBtnX(), dy = e.getY() - themeBtnY();
+                    float r = themeBtnR() * 1.8f;
+                    if (dx * dx + dy * dy < r * r) {
+                        toggleTheme = true;
+                        return true;
+                    }
+                }
+                touching = true;
+                tapped = true;
+                break;
             case MotionEvent.ACTION_POINTER_DOWN:
                 touching = true;
                 tapped = true;
@@ -318,7 +390,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         shake = 0;
         flash = 0;
         msgTimer = 0;
-        for (float z = 45f; z < SPAWN_Z; z += 9f) spawnObstacle(z, 0.15f);
+        aimAcc = 0;
+        passedBest = false;
+        newHigh = false;
+        goldFlash = 0;
+        bestAtStart = best;
+        float g0 = 9f * (48f / (2f * FIELD));
+        for (float z = 45f; z < SPAWN_Z; z += g0) spawnObstacle(z, false);
+        for (float z = 60f; z < SPAWN_Z; z += 26f) spawnObstacle(z, true);
         for (float z = 2f; z < 80f; z += 1f) { spawnDecor(z); spawnDecor(z); }
     }
 
@@ -329,6 +408,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float s = Math.abs(t) < dead ? 0f : (t - Math.signum(t) * dead) / 5.0f;
         s = clamp(s, -1f, 1f);
         steer += (s - steer) * Math.min(1f, dt * 12f);
+
+        if (toggleTheme) {
+            toggleTheme = false;
+            dark = !dark;
+            prefs.edit().putBoolean("dark", dark).apply();
+            themeDirty = true;
+        }
 
         if (state == MENU) {
             menuTime += dt;
@@ -368,7 +454,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float target = base + boost;
         speed += (target - speed) * Math.min(1f, dt * 3f);
 
-        float latMax = 8f + speed * 0.2f;
+        // Sideways speed stays human: it no longer scales up with sprinting.
+        float latMax = 7f + speed * 0.06f;
         latVel += (steer * latMax - latVel) * Math.min(1f, dt * 8f);
         px += latVel * dt;
         roll += (-steer * 5f - roll) * Math.min(1f, dt * 6f);
@@ -379,12 +466,32 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         advanceWorld(dz, dt, true);
         if (state != RUN) return;
 
-        // spawning
-        spawnAcc += dz;
+        // High score passed mid-run: flash gold once.
+        if (!passedBest && bestAtStart > 0 && score() > bestAtStart) {
+            passedBest = true;
+            goldFlash = 1f;
+            msg = "NEW HIGH SCORE!";
+            msgTimer = 2.0f;
+            speak("New high score!");
+        }
+        goldFlash = Math.max(0f, goldFlash - dt * 1.5f);
+
+        // Spawning. Obstacles fill a wide field across where you will be when they
+        // arrive, so steering hard to one side just runs you into a different part of
+        // the forest instead of out of it.
         float gap = Math.max(3.2f, 9f - elapsed * 0.045f);
-        while (spawnAcc >= gap) {
-            spawnAcc -= gap;
-            spawnObstacle(SPAWN_Z - spawnAcc, 0.35f);
+        spawnAcc += dz;
+        float fieldGap = gap * (48f / (2f * FIELD));
+        while (spawnAcc >= fieldGap) {
+            spawnAcc -= fieldGap;
+            spawnObstacle(SPAWN_Z - spawnAcc, false);
+        }
+        // Plus a steady stream aimed straight at your predicted path.
+        aimAcc += dz;
+        float aimGap = Math.max(9f, 26f - elapsed * 0.12f);
+        while (aimAcc >= aimGap) {
+            aimAcc -= aimGap;
+            spawnObstacle(SPAWN_Z - aimAcc, true);
         }
         rowAcc += dz;
         if (elapsed > 15f && rowAcc > nextRow) {
@@ -399,6 +506,25 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             spawnDecor(80f - decorAcc);
         }
         if (msgTimer > 0) msgTimer -= dt;
+    }
+
+    /** Where the player will be sideways when something now at distance z reaches them. */
+    private float predictX(float z) {
+        float eta = speed > 1f ? Math.min(z / speed, 5f) : 0f;
+        return px + latVel * eta;
+    }
+
+    private void speak(String s) {
+        if (tts != null && ttsReady) {
+            try { tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "hr"); } catch (Exception ignored) { }
+        }
+    }
+
+    public void release() {
+        if (tts != null) {
+            try { tts.shutdown(); } catch (Exception ignored) { }
+            tts = null;
+        }
     }
 
     /** Moves every object toward the player and handles collisions. */
@@ -424,7 +550,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             }
 
             boolean gone = o.z < (o.solid() ? -1f : NEAR_Z)
-                    || Math.abs(o.x - px) > 90f;
+                    || Math.abs(o.x - px) > FIELD + 50f;
             if (!o.solid() && !gone && o.z > 0) {
                 // keep the grass field around the player when steering far sideways
                 if (Math.abs(o.x - px) > 38f) gone = true;
@@ -434,7 +560,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         // in the menu, keep the scene populated
         if (!collide) {
             spawnAcc += dz;
-            while (spawnAcc >= 9f) { spawnAcc -= 9f; spawnObstacle(SPAWN_Z, 0f); }
+            float g = 9f * (48f / (2f * FIELD));
+            while (spawnAcc >= g) { spawnAcc -= g; spawnObstacle(SPAWN_Z, false); }
             decorAcc += dz;
             while (decorAcc >= 1f) { decorAcc -= 1f; spawnDecor(80f); spawnDecor(80f); }
         }
@@ -458,10 +585,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         flash = 1f;
         boost = 0;
         int score = score();
+        newHigh = score > bestAtStart && bestAtStart > 0;
         if (score > best) {
             best = score;
             prefs.edit().putInt("best", best).apply();
         }
+        if (newHigh) speak("New high score! " + score + " meters.");
         try {
             Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null && v.hasVibrator()) {
@@ -474,7 +603,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     // ---- spawning -----------------------------------------------------------------
 
-    private void spawnObstacle(float z, float aimChance) {
+    private void spawnObstacle(float z, boolean aimed) {
         float r = rnd.nextFloat();
         int type;
         if (r < 0.30f) type = PINE;
@@ -485,14 +614,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         else if (r < 0.90f) type = FOX;
         else type = (state == RUN && elapsed > 8f) ? BRANCH : ROCK;
 
+        float center = predictX(z);
         for (int attempt = 0; attempt < 6; attempt++) {
             float x;
-            if (rnd.nextFloat() < aimChance) {
-                // aim at where the player is heading
-                float eta = speed > 1f ? Math.min(z / speed, 3f) : 0f;
-                x = px + latVel * eta * 0.5f + (rnd.nextFloat() * 2f - 1f) * 3f;
+            if (aimed) {
+                // right where the player is heading
+                x = center + (rnd.nextFloat() * 2f - 1f) * 2.5f;
             } else {
-                x = px + (rnd.nextFloat() * 2f - 1f) * 24f;
+                x = center + (rnd.nextFloat() * 2f - 1f) * FIELD;
             }
             Obj o = make(type, x, z);
             if (type == BRANCH || !crowded(o)) {
@@ -503,9 +632,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void spawnRow(float z) {
-        float gapX = px + (rnd.nextFloat() * 2f - 1f) * 7f;
+        float center = predictX(z);
+        float gapX = center + (rnd.nextFloat() * 2f - 1f) * 7f;
         int kind = rnd.nextBoolean() ? PINE : ROCK;
-        for (float x = px - 20f; x <= px + 20f; x += 2.6f) {
+        for (float x = center - 26f; x <= center + 26f; x += 2.6f) {
             if (Math.abs(x - gapX) < 2.4f) continue;
             Obj o = make(kind, x + (rnd.nextFloat() - 0.5f) * 0.3f, z + (rnd.nextFloat() - 0.5f) * 1.5f);
             if (kind == PINE) { o.size = 1f; o.radius = 1.05f; }
@@ -577,9 +707,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 break;
             }
             case BRANCH: {
+                // Limb length 3.2-6.4 m (20% shorter than the first version).
+                // The trunk is placed so the limb hangs over the requested spot x.
                 float side = rnd.nextBoolean() ? 1f : -1f;
-                o.x = px + side * (1.5f + rnd.nextFloat() * 5f) + (rnd.nextFloat() - 0.5f) * 4f;
-                o.x2 = o.x - side * (4f + rnd.nextFloat() * 4f);
+                float len = 3.2f + rnd.nextFloat() * 3.2f;
+                o.x = x + side * (0.8f + rnd.nextFloat() * (len - 1.3f));
+                o.x2 = o.x - side * len;
                 o.size = 1f;
                 o.radius = 0.4f;
                 break;
@@ -633,7 +766,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     // ================================================================================
 
     private void render(Canvas c) {
-        c.drawColor(0xFF0E2457);
+        if (themeDirty) applyTheme();
+        c.drawColor(bgCol);
         c.save();
         if (shake > 0f) {
             float a = shake * H * 0.03f;
@@ -661,36 +795,36 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         // faint stars high up
         p.setStyle(Paint.Style.FILL);
-        p.setColor(0x66FFFFFF);
+        p.setColor(starCol);
         float sr = Math.max(1.5f, H * 0.0025f);
         for (int i = 0; i < starX.length; i++) {
             float x = wrap(starX[i] * W * 1.6f - px * 0.6f, W * 1.6f) - W * 0.3f;
-            c.drawCircle(x, starY[i] * H - H * 0.05f, sr, p);
+            c.drawCircle(x, starY[i] * H * (dark ? 2.2f : 1f) - H * 0.05f, sr * (dark && (i % 5 == 0) ? 1.6f : 1f), p);
         }
 
         // a big ringed neighbour planet hanging in the sky
         float plx = wrap(W * 0.78f - px * 1.2f, W * 2.4f) - W * 0.7f;
         float ply = H * 0.11f;
         float plr = H * 0.075f;
-        p.setColor(0xFFE9D9B6);
+        p.setColor(planetCol);
         c.drawCircle(plx, ply, plr, p);
         p.setColor(0x33A0784A);
         c.drawCircle(plx + plr * 0.25f, ply + plr * 0.2f, plr * 0.8f, p);
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(plr * 0.12f);
-        p.setColor(0xAAF3E6C8);
+        p.setColor(ringCol);
         c.save();
         c.rotate(-18f, plx, ply);
         rect.set(plx - plr * 1.9f, ply - plr * 0.42f, plx + plr * 1.9f, ply + plr * 0.42f);
         c.drawOval(rect, p);
         c.restore();
         p.setStyle(Paint.Style.FILL);
-        p.setColor(0xFFE9D9B6);
+        p.setColor(planetCol);
         rect.set(plx - plr, ply - plr, plx + plr, ply);
         c.drawArc(rect, 180f, 180f, true, p);   // planet body in front of the far side of the ring
 
         // drifting clouds with a little parallax
-        p.setColor(0xD9FFFFFF);
+        p.setColor(cloudCol);
         for (int i = 0; i < cloudX.length; i++) {
             float span = W * 2f;
             float x = wrap(cloudX[i] * span - px * 3f - distance * 0.15f, span) - W * 0.5f;
@@ -711,13 +845,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             float y = horizonY(u);
             if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
         }
-        glow.setColor(0x30FFFFFF);
+        glow.setColor((glowCol & 0x00FFFFFF) | 0x30000000);
         glow.setStrokeWidth(H * 0.10f);
         c.drawPath(path, glow);
-        glow.setColor(0x50FFFFFF);
+        glow.setColor((glowCol & 0x00FFFFFF) | 0x50000000);
         glow.setStrokeWidth(H * 0.045f);
         c.drawPath(path, glow);
-        glow.setColor(0x90FFFFFF);
+        glow.setColor((glowCol & 0x00FFFFFF) | 0x90000000);
         glow.setStrokeWidth(H * 0.012f);
         c.drawPath(path, glow);
     }
@@ -766,7 +900,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             float zMid = (hi + bandLo) * 0.5f;
             int stripe = (int) Math.floor((distance + zMid) / BAND);
             int col = (stripe & 1) == 0 ? GROUND_A : GROUND_B;
-            drawBand(c, hi, bandLo, fog(col, fogFor(zMid)));
+            drawBand(c, hi, bandLo, hazeMix(col, fogFor(zMid)));
             for (int k = start; k < oi; k++) {
                 Obj o = drawList.get(k);
                 if (o.z <= horizonDist((o.x - px) / o.z)) drawObj(c, o);
@@ -805,8 +939,20 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private int fog(int color) { return fog(color, fogT); }
 
-    private static int fog(int color, float t) {
+    /** Blend toward the horizon haze without the night tint (ground is already themed). */
+    private int hazeMix(int color, float t) {
         int r = Color.red(color), g = Color.green(color), b = Color.blue(color);
+        int hr = Color.red(HAZE), hg = Color.green(HAZE), hb = Color.blue(HAZE);
+        return Color.rgb((int) (r + (hr - r) * t), (int) (g + (hg - g) * t), (int) (b + (hb - b) * t));
+    }
+
+    private int fog(int color, float t) {
+        int r = Color.red(color), g = Color.green(color), b = Color.blue(color);
+        if (dark) {          // moonlit: darker and cooler
+            r = (int) (r * 0.42f);
+            g = (int) (g * 0.48f);
+            b = (int) (b * 0.62f + 12);
+        }
         int hr = Color.red(HAZE), hg = Color.green(HAZE), hb = Color.blue(HAZE);
         return Color.argb(Color.alpha(color),
                 (int) (r + (hr - r) * t), (int) (g + (hg - g) * t), (int) (b + (hb - b) * t));
@@ -1175,6 +1321,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText("Tilt your phone left and right to steer", cx, H * 0.52f, txt);
             c.drawText("Hold a finger on the screen to sprint", cx, H * 0.6f, txt);
             c.drawText("Dodge trees, rocks, animals and low branches", cx, H * 0.68f, txt);
+            txt.setTextSize(H * 0.032f);
+            txt.setColor(0xCCFFFFFF);
+            c.drawText("Tap the sun / moon to switch light and dark mode", cx, H * 0.745f, txt);
+            txt.setColor(Color.WHITE);
             float pulse = 0.6f + 0.4f * (float) Math.sin(menuTime * 4f);
             txt.setColor(Color.argb((int) (255 * pulse), 255, 220, 120));
             txt.setTextSize(H * 0.06f);
@@ -1199,21 +1349,74 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawRect(0, 0, W, H, p);
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setColor(Color.argb((int) (255 * a), 255, 255, 255));
-            txt.setTextSize(H * 0.12f);
-            c.drawText("WIPEOUT", cx, H * 0.4f, txt);
-            txt.setTextSize(H * 0.06f);
-            c.drawText(score() + " m", cx, H * 0.53f, txt);
-            txt.setTextSize(H * 0.04f);
-            boolean newBest = score() >= best && best > 0;
-            c.drawText(newBest ? "New best!" : "Best: " + best + " m", cx, H * 0.61f, txt);
+            if (newHigh) {
+                txt.setTextSize(H * 0.07f);
+                c.drawText("WIPEOUT", cx, H * 0.27f, txt);
+                float pulse = 1f + 0.06f * (float) Math.sin(crashTimer * 6f);
+                txt.setColor(Color.argb((int) (255 * a), 255, 212, 70));
+                txt.setTextSize(H * 0.12f * pulse);
+                c.drawText("NEW HIGH SCORE!", cx, H * 0.43f, txt);
+                txt.setColor(Color.argb((int) (255 * a), 255, 255, 255));
+                txt.setTextSize(H * 0.075f);
+                c.drawText(score() + " m", cx, H * 0.56f, txt);
+                txt.setTextSize(H * 0.038f);
+                c.drawText("Previous best: " + bestAtStart + " m", cx, H * 0.64f, txt);
+            } else {
+                txt.setTextSize(H * 0.12f);
+                c.drawText("WIPEOUT", cx, H * 0.4f, txt);
+                txt.setTextSize(H * 0.06f);
+                c.drawText(score() + " m", cx, H * 0.53f, txt);
+                txt.setTextSize(H * 0.04f);
+                c.drawText("Best: " + best + " m", cx, H * 0.61f, txt);
+            }
             if (crashTimer > 0.9f) {
                 float pulse = 0.6f + 0.4f * (float) Math.sin(crashTimer * 4f);
                 txt.setColor(Color.argb((int) (255 * pulse * a), 255, 220, 120));
                 txt.setTextSize(H * 0.05f);
-                c.drawText("TAP TO RUN AGAIN", cx, H * 0.78f, txt);
+                c.drawText("TAP TO RUN AGAIN", cx, H * 0.8f, txt);
             }
             txt.setColor(Color.WHITE);
         }
+
+        if (state == MENU || (state == CRASH && crashTimer > 0.5f)) drawThemeButton(c);
+
+        // gold flash when the old high score is beaten mid-run
+        if (goldFlash > 0f) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.argb((int) (goldFlash * goldFlash * 150), 255, 205, 60));
+            c.drawRect(0, 0, W, H, p);
+        }
+    }
+
+    /** Sun (light mode) or moon (dark mode); tap to switch. */
+    private void drawThemeButton(Canvas c) {
+        float x = themeBtnX(), y = themeBtnY(), r = themeBtnR();
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0x55000000);
+        c.drawCircle(x, y, r * 1.45f, p);
+        if (dark) {
+            p.setColor(0xFFE8ECF5);
+            c.drawCircle(x, y, r * 0.75f, p);
+            p.setColor(0xFF1A2440);
+            c.drawCircle(x + r * 0.38f, y - r * 0.25f, r * 0.62f, p);
+        } else {
+            p.setColor(0xFFFFD45A);
+            c.drawCircle(x, y, r * 0.5f, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeWidth(r * 0.14f);
+            for (int i = 0; i < 8; i++) {
+                double ang = Math.PI * i / 4;
+                float ca = (float) Math.cos(ang), sa = (float) Math.sin(ang);
+                c.drawLine(x + ca * r * 0.72f, y + sa * r * 0.72f, x + ca * r * 0.98f, y + sa * r * 0.98f, p);
+            }
+            p.setStyle(Paint.Style.FILL);
+        }
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.028f);
+        txt.setColor(0xDDFFFFFF);
+        c.drawText(dark ? "DARK" : "LIGHT", x, y + r * 1.45f + H * 0.04f, txt);
+        txt.setColor(Color.WHITE);
     }
 
     // ---- small helpers ------------------------------------------------------------
