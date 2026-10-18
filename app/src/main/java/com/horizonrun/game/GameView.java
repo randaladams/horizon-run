@@ -61,6 +61,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     // ---- object types -------------------------------------------------------------
     private static final int PINE = 0, OAK = 1, ROCK = 2, DEER = 3, BEAR = 4, FOX = 5, BRANCH = 6;
     private static final int GRASS = 7, FLOWER = 8;
+    private static final int SNAIL = 9;          // slow-down pickup
 
     private static final class Obj {
         int type;
@@ -71,6 +72,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         boolean judged;      // collision / near-miss already evaluated
 
         boolean solid() { return type < GRASS; }
+        boolean decor() { return type == GRASS || type == FLOWER; }
     }
 
     private static final int MENU = 0, RUN = 1, CRASH = 2;
@@ -115,6 +117,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private float msgTimer;
     private String msg = "";
     private float menuTime;
+    private float baseTime;          // drives the base speed; snails knock it back
+    private float pickupAcc, nextPickup = 300f;
+    private float blueFlash, animTime;
+    private float resetConfirm;      // >0 while waiting for the second tap
+    private volatile boolean resetTap;
+    private static final float SNAIL_SLOW = 25f;   // seconds of speed build-up removed
 
     // ---- rendering ----------------------------------------------------------------
     private float W = 1, H = 1, cx, cy, f, uMax;
@@ -327,6 +335,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                         toggleTheme = true;
                         return true;
                     }
+                    if (e.getX() >= resetBtnL() - H * 0.03f && e.getX() <= resetBtnR() + H * 0.03f
+                            && e.getY() >= resetBtnT() - H * 0.03f && e.getY() <= resetBtnB() + H * 0.03f) {
+                        resetTap = true;
+                        return true;
+                    }
                 }
                 touching = true;
                 tapped = true;
@@ -379,6 +392,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         px = 0;
         distance = 0;
         elapsed = 0;
+        baseTime = 0;
+        pickupAcc = 0;
+        nextPickup = 220f + rnd.nextFloat() * 120f;
+        blueFlash = 0;
         speed = BASE_SPEED;
         boost = 0;
         latVel = 0;
@@ -395,9 +412,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         newHigh = false;
         goldFlash = 0;
         bestAtStart = best;
-        float g0 = 9f * (48f / (2f * FIELD));
+        float g0 = 12f * (48f / (2f * FIELD));
         for (float z = 45f; z < SPAWN_Z; z += g0) spawnObstacle(z, false);
-        for (float z = 60f; z < SPAWN_Z; z += 26f) spawnObstacle(z, true);
+        for (float z = 70f; z < SPAWN_Z; z += 36f) spawnObstacle(z, true);
         for (float z = 2f; z < 80f; z += 1f) { spawnDecor(z); spawnDecor(z); }
     }
 
@@ -408,6 +425,24 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float s = Math.abs(t) < dead ? 0f : (t - Math.signum(t) * dead) / 5.0f;
         s = clamp(s, -1f, 1f);
         steer += (s - steer) * Math.min(1f, dt * 12f);
+
+        animTime += dt;
+        if (resetConfirm > 0f) resetConfirm -= dt;
+        if (resetTap) {
+            resetTap = false;
+            if (resetConfirm > 0f) {
+                best = 0;
+                bestAtStart = 0;
+                newHigh = false;
+                prefs.edit().putInt("best", 0).apply();
+                resetConfirm = 0f;
+                msg = "BEST SCORE RESET";
+                msgTimer = 1.5f;
+            } else {
+                resetConfirm = 2.5f;
+            }
+        }
+        if (msgTimer > 0 && state != RUN) msgTimer -= dt;
 
         if (toggleTheme) {
             toggleTheme = false;
@@ -448,7 +483,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         // ---- RUN ----
         tapped = false;
         elapsed += dt;
-        float base = Math.min(BASE_SPEED + elapsed * SPEED_GAIN, MAX_BASE);
+        baseTime += dt;
+        float base = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
         if (touching) boost = Math.min(boost + BOOST_GAIN * dt, MAX_BOOST);
         else boost = Math.max(0f, boost - BOOST_DECAY * dt);
         float target = base + boost;
@@ -479,7 +515,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         // Spawning. Obstacles fill a wide field across where you will be when they
         // arrive, so steering hard to one side just runs you into a different part of
         // the forest instead of out of it.
-        float gap = Math.max(3.2f, 9f - elapsed * 0.045f);
+        float gap = Math.max(4.4f, 12f - elapsed * 0.055f);
         spawnAcc += dz;
         float fieldGap = gap * (48f / (2f * FIELD));
         while (spawnAcc >= fieldGap) {
@@ -488,11 +524,19 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
         // Plus a steady stream aimed straight at your predicted path.
         aimAcc += dz;
-        float aimGap = Math.max(9f, 26f - elapsed * 0.12f);
+        float aimGap = Math.max(13f, 36f - elapsed * 0.15f);
         while (aimAcc >= aimGap) {
             aimAcc -= aimGap;
             spawnObstacle(SPAWN_Z - aimAcc, true);
         }
+        // Slow-down snails: rarer early on, more useful once you're flying.
+        pickupAcc += dz;
+        if (pickupAcc >= nextPickup && baseTime > 12f) {
+            pickupAcc = 0;
+            nextPickup = 350f + rnd.nextFloat() * 300f;
+            spawnSnail(SPAWN_Z);
+        }
+        blueFlash = Math.max(0f, blueFlash - dt * 1.5f);
         rowAcc += dz;
         if (elapsed > 15f && rowAcc > nextRow) {
             rowAcc = 0;
@@ -549,9 +593,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 }
             }
 
+            if (collide && o.type == SNAIL && !o.judged && prevZ >= HIT_Z && o.z < HIT_Z) {
+                o.judged = true;
+                if (Math.abs(o.x - px) < 1.3f + PLAYER_R) {
+                    collectSnail();
+                    objs.remove(i);
+                    continue;
+                }
+            }
+
             boolean gone = o.z < (o.solid() ? -1f : NEAR_Z)
                     || Math.abs(o.x - px) > FIELD + 50f;
-            if (!o.solid() && !gone && o.z > 0) {
+            if (o.decor() && !gone && o.z > 0) {
                 // keep the grass field around the player when steering far sideways
                 if (Math.abs(o.x - px) > 38f) gone = true;
             }
@@ -560,7 +613,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         // in the menu, keep the scene populated
         if (!collide) {
             spawnAcc += dz;
-            float g = 9f * (48f / (2f * FIELD));
+            float g = 12f * (48f / (2f * FIELD));
             while (spawnAcc >= g) { spawnAcc -= g; spawnObstacle(SPAWN_Z, false); }
             decorAcc += dz;
             while (decorAcc >= 1f) { decorAcc -= 1f; spawnDecor(80f); spawnDecor(80f); }
@@ -862,7 +915,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         for (int i = 0; i < objs.size(); i++) {
             Obj o = objs.get(i);
             if (o.z <= NEAR_Z) continue;
-            if (!o.solid() && o.z > 55f) continue;
+            if (o.decor() && o.z > 55f) continue;
             float u = (o.x - px) / o.z;
             if (Math.abs(u) > uMax + 0.6f && o.type != BRANCH) continue;
             drawList.add(o);
@@ -991,6 +1044,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             case FOX:    drawFox(c, o); break;
             case GRASS:  drawGrass(c, o); break;
             case FLOWER: drawFlower(c, o); break;
+            case SNAIL:  drawSnail(c, o); break;
             default: break;
         }
         c.restore();
@@ -1320,7 +1374,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextSize(H * 0.045f);
             c.drawText("Tilt your phone left and right to steer", cx, H * 0.52f, txt);
             c.drawText("Hold a finger on the screen to sprint", cx, H * 0.6f, txt);
-            c.drawText("Dodge trees, rocks, animals and low branches", cx, H * 0.68f, txt);
+            c.drawText("Dodge trees, rocks, animals and low branches \u2014 grab glowing snails to slow down", cx, H * 0.68f, txt);
             txt.setTextSize(H * 0.032f);
             txt.setColor(0xCCFFFFFF);
             c.drawText("Tap the sun / moon to switch light and dark mode", cx, H * 0.745f, txt);
@@ -1378,7 +1432,17 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setColor(Color.WHITE);
         }
 
-        if (state == MENU || (state == CRASH && crashTimer > 0.5f)) drawThemeButton(c);
+        if (state == MENU || (state == CRASH && crashTimer > 0.5f)) {
+            drawThemeButton(c);
+            drawResetButton(c);
+        }
+
+        // soft blue wash when a snail slows you down
+        if (blueFlash > 0f) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.argb((int) (blueFlash * blueFlash * 120), 90, 200, 255));
+            c.drawRect(0, 0, W, H, p);
+        }
 
         // gold flash when the old high score is beaten mid-run
         if (goldFlash > 0f) {
@@ -1386,6 +1450,136 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             p.setColor(Color.argb((int) (goldFlash * goldFlash * 150), 255, 205, 60));
             c.drawRect(0, 0, W, H, p);
         }
+    }
+
+    // ---- reset-best button (bottom-left of the menu and crash screens) ------------
+    private float resetBtnL() { return Math.max(W * 0.035f, H * 0.05f); }
+    private float resetBtnR() { return resetBtnL() + W * 0.2f; }
+    private float resetBtnB() { return H - Math.max(W * 0.02f, H * 0.04f); }
+    private float resetBtnT() { return resetBtnB() - H * 0.09f; }
+
+    private void drawResetButton(Canvas c) {
+        boolean confirm = resetConfirm > 0f;
+        rect.set(resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB());
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(confirm ? 0xCCB3261E : 0x66000000);
+        float rr = rect.height() * 0.5f;
+        c.drawRoundRect(rect, rr, rr, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(2f, H * 0.003f));
+        p.setColor(0x99FFFFFF);
+        c.drawRoundRect(rect, rr, rr, p);
+        p.setStyle(Paint.Style.FILL);
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.032f);
+        txt.setColor(Color.WHITE);
+        c.drawText(confirm ? "TAP AGAIN TO RESET" : "RESET BEST SCORE",
+                rect.centerX(), rect.centerY() + H * 0.011f, txt);
+        if (msgTimer > 0 && state != RUN && msg.equals("BEST SCORE RESET")) {
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setColor(0xFFFFE98C);
+            c.drawText("Best score reset", resetBtnL(), resetBtnT() - H * 0.025f, txt);
+            txt.setColor(Color.WHITE);
+        }
+    }
+
+    // ---- snail pickup ---------------------------------------------------------------
+    private void spawnSnail(float z) {
+        Obj o = new Obj();
+        o.type = SNAIL;
+        o.z = z;
+        // close enough to reach, but you have to steer for it
+        float side = rnd.nextBoolean() ? 1f : -1f;
+        o.x = predictX(z) + side * (2.5f + rnd.nextFloat() * 6f);
+        o.size = 1f;
+        o.radius = 1.3f;
+        // keep it clear of obstacles so grabbing it is fair
+        for (int i = objs.size() - 1; i >= 0; i--) {
+            Obj b = objs.get(i);
+            if (b.solid() && Math.abs(b.z - z) < 8f) {
+                float lo = b.type == BRANCH ? Math.min(b.x, b.x2) : b.x - b.radius;
+                float hi = b.type == BRANCH ? Math.max(b.x, b.x2) : b.x + b.radius;
+                if (o.x > lo - 3f && o.x < hi + 3f) objs.remove(i);
+            }
+        }
+        objs.add(o);
+    }
+
+    private void collectSnail() {
+        float before = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
+        baseTime = Math.max(0f, Math.min(baseTime, (MAX_BASE - BASE_SPEED) / SPEED_GAIN) - SNAIL_SLOW);
+        float after = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
+        int kmh = Math.round((before - after) * 3.6f);
+        bonus += 10;
+        msg = "SLOW DOWN  -" + kmh + " km/h";
+        msgTimer = 1.6f;
+        blueFlash = 1f;
+        try {
+            Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
+            if (v != null && v.hasVibrator()) {
+                v.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE));
+            }
+        } catch (Exception ignored) { }
+    }
+
+    /** A giant snail with a glowing spiral shell, bobbing so it reads as a pickup. */
+    private void drawSnail(Canvas c, Obj o) {
+        float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 4f + o.x);
+        float bob = (float) Math.sin(animTime * 3f + o.x) * 0.08f;
+        // glow halo
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(Color.argb((int) (50 + 60 * pulse), 120, 230, 255));
+        c.drawCircle(0f, -0.9f + bob, 1.75f + 0.15f * pulse, p);
+        p.setColor(Color.argb((int) (40 + 50 * pulse), 200, 250, 255));
+        c.drawCircle(0f, -0.9f + bob, 1.25f, p);
+
+        c.translate(0f, bob);
+        // body (a long soft foot with the head raised at the front)
+        int bodyCol = fog(0xFFCFD98A);
+        p.setColor(bodyCol);
+        path.reset();
+        path.moveTo(-1.35f, 0f);
+        path.quadTo(-1.4f, -0.3f, -0.9f, -0.32f);
+        path.lineTo(0.75f, -0.32f);
+        path.quadTo(0.95f, -0.9f, 1.25f, -0.95f);
+        path.quadTo(1.55f, -0.9f, 1.5f, -0.5f);
+        path.quadTo(1.45f, 0f, 1.1f, 0f);
+        path.close();
+        c.drawPath(path, p);
+        // eye stalks
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeWidth(0.07f);
+        c.drawLine(1.2f, -0.9f, 1.05f, -1.45f, p);
+        c.drawLine(1.35f, -0.9f, 1.5f, -1.42f, p);
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(fog(0xFF222222));
+        c.drawCircle(1.05f, -1.48f, 0.09f, p);
+        c.drawCircle(1.5f, -1.45f, 0.09f, p);
+        p.setColor(fog(0xFF8A9150));
+        c.drawCircle(1.33f, -0.62f, 0.05f, p);   // little smile dot
+
+        // shell
+        float sx = -0.15f, sy = -0.95f, sr = 0.72f;
+        p.setColor(fog(0xFFD98A3A));
+        c.drawCircle(sx, sy, sr, p);
+        p.setColor(fog(0xFFF0B060));
+        c.drawCircle(sx - 0.12f, sy - 0.12f, sr * 0.62f, p);
+        // glowing spiral
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(0.09f);
+        p.setColor(Color.argb(255, 120 + (int) (100 * pulse), 230, 255));
+        path.reset();
+        int n = 48;
+        for (int i = 0; i <= n; i++) {
+            float t = (float) i / n;
+            double a = t * Math.PI * 2 * 2.6;
+            float r = sr * 0.88f * (1f - t * 0.92f);
+            float x = sx + (float) Math.cos(a) * r, y = sy + (float) Math.sin(a) * r;
+            if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+        }
+        c.drawPath(path, p);
+        p.setStyle(Paint.Style.FILL);
     }
 
     /** Sun (light mode) or moon (dark mode); tap to switch. */

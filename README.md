@@ -8,7 +8,7 @@ A first-person running game for Android, played in landscape. You run across a s
 - **Hold a finger on the screen** to sprint. The longer you hold, the faster you go.
 - **Lift your finger** and you ease back to your base speed, which keeps climbing the longer the run lasts.
 
-Close calls earn +25 bonus metres. Your best distance is saved on the phone.
+Close calls earn +25 bonus metres. Run through a **glowing snail** to knock your base speed back down (about 27 km/h). The **Reset best score** button (bottom-left of the start and crash screens, tap twice) clears your record for testing. Your best distance is saved on the phone.
 
 ## Install on your phone
 
