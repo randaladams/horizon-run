@@ -62,6 +62,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private static final int PINE = 0, OAK = 1, ROCK = 2, DEER = 3, BEAR = 4, FOX = 5, BRANCH = 6;
     private static final int GRASS = 7, FLOWER = 8;
     private static final int SNAIL = 9;          // slow-down pickup
+    private static final int BLOOM = 10, GOLD_BLOOM = 11;   // score flowers
 
     private static final class Obj {
         int type;
@@ -69,6 +70,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float x2;            // branch: tip position (x is the trunk)
         float[] verts;       // rock outline
         int color;
+        int trail = -1;      // which flower trail this bloom belongs to
         boolean judged;      // collision / near-miss already evaluated
 
         boolean solid() { return type < GRASS; }
@@ -118,6 +120,15 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private String msg = "";
     private float menuTime;
     private float baseTime;          // drives the base speed; snails knock it back
+    // score flowers
+    private static final int FLOWER_PTS = 20, BOUQUET_PTS = 100, GOLD_PTS = 150, TRAIL_LEN = 5;
+    private float flowerTimer, nextFlower = 3f;
+    private int trailId, trailGot, trailMissed, activeTrail = -1;
+    private int flowersRun;
+    private String popText = "";
+    private float popTimer;
+    private int popColor;
+    private float pinkFlash;
     private float pickupAcc, nextPickup = 300f;
     private float blueFlash, animTime;
     private float resetConfirm;      // >0 while waiting for the second tap
@@ -436,6 +447,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         newHigh = false;
         goldFlash = 0;
         bestAtStart = best;
+        flowerTimer = 0;
+        nextFlower = 3f + rnd.nextFloat() * 2f;
+        activeTrail = -1;
+        flowersRun = 0;
+        popTimer = 0;
+        pinkFlash = 0;
         float g0 = 12f * (48f / (2f * FIELD));
         for (float z = 45f; z < SPAWN_Z; z += g0) spawnObstacle(z, false);
         for (float z = 70f; z < SPAWN_Z; z += 36f) spawnObstacle(z, true);
@@ -563,6 +580,17 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             aimAcc -= aimGap;
             spawnObstacle(SPAWN_Z - aimAcc, true);
         }
+        // Score flowers: a curving trail most of the time, now and then a golden one.
+        flowerTimer += dt;
+        if (flowerTimer >= nextFlower) {
+            flowerTimer = 0;
+            nextFlower = 3.5f + rnd.nextFloat() * 3f;
+            if (rnd.nextFloat() < 0.18f && elapsed > 10f) spawnGoldBloom(SPAWN_Z);
+            else spawnFlowerTrail(SPAWN_Z);
+        }
+        if (popTimer > 0) popTimer -= dt;
+        pinkFlash = Math.max(0f, pinkFlash - dt * 2.5f);
+
         // Slow-down snails, on a timer that speeds up as the base speed climbs:
         // every 5-9 s at the start, every ~3-5 s near top speed.
         pickupAcc += dt;
@@ -635,6 +663,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     collectSnail();
                     objs.remove(i);
                     continue;
+                }
+            }
+
+            if (collide && (o.type == BLOOM || o.type == GOLD_BLOOM)
+                    && !o.judged && prevZ >= HIT_Z && o.z < HIT_Z) {
+                o.judged = true;
+                if (Math.abs(o.x - px) < 1.0f + PLAYER_R) {
+                    collectFlower(o);
+                    objs.remove(i);
+                    continue;
+                } else if (o.type == BLOOM && o.trail == activeTrail) {
+                    trailMissed++;
                 }
             }
 
@@ -1081,6 +1121,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             case GRASS:  drawGrass(c, o); break;
             case FLOWER: drawFlower(c, o); break;
             case SNAIL:  drawSnail(c, o); break;
+            case BLOOM:
+            case GOLD_BLOOM: drawBloom(c, o); break;
             default: break;
         }
         c.restore();
@@ -1371,6 +1413,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextSize(H * 0.035f);
             txt.setColor(0xCCFFFFFF);
             c.drawText("BEST " + best, pad, pad + H * 0.11f, txt);
+            txt.setColor(0xFFFF9FD0);
+            c.drawText("\u273F " + flowersRun, pad, pad + H * 0.155f, txt);
             txt.setColor(Color.WHITE);
 
             txt.setTextAlign(Paint.Align.RIGHT);
@@ -1411,7 +1455,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextSize(H * 0.045f);
             c.drawText("Tilt your phone left and right to steer", cx, H * 0.52f, txt);
             c.drawText("Hold a finger on the screen to sprint", cx, H * 0.6f, txt);
-            c.drawText("Dodge trees, rocks, animals and low branches \u2014 grab glowing snails to slow down", cx, H * 0.68f, txt);
+            c.drawText("Dodge obstacles  \u2022  glowing snails slow you down  \u2022  flowers score points", cx, H * 0.68f, txt);
             txt.setTextSize(H * 0.032f);
             txt.setColor(0xCCFFFFFF);
             c.drawText("Tap the sun / moon to switch light and dark mode", cx, H * 0.745f, txt);
@@ -1451,14 +1495,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 txt.setTextSize(H * 0.075f);
                 c.drawText(score() + " m", cx, H * 0.56f, txt);
                 txt.setTextSize(H * 0.038f);
-                c.drawText("Previous best: " + bestAtStart + " m", cx, H * 0.64f, txt);
+                c.drawText("Previous best: " + bestAtStart + " m   \u2022   Flowers: " + flowersRun, cx, H * 0.64f, txt);
             } else {
                 txt.setTextSize(H * 0.12f);
                 c.drawText("WIPEOUT", cx, H * 0.4f, txt);
                 txt.setTextSize(H * 0.06f);
                 c.drawText(score() + " m", cx, H * 0.53f, txt);
                 txt.setTextSize(H * 0.04f);
-                c.drawText("Best: " + best + " m", cx, H * 0.61f, txt);
+                c.drawText("Best: " + best + " m   \u2022   Flowers: " + flowersRun, cx, H * 0.61f, txt);
             }
             if (crashTimer > 0.9f) {
                 float pulse = 0.6f + 0.4f * (float) Math.sin(crashTimer * 4f);
@@ -1481,6 +1525,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             p.setColor(Color.argb((int) (blueFlash * blueFlash * 120), 90, 200, 255));
             c.drawRect(0, 0, W, H, p);
         }
+
+        drawPickupFx(c);
 
         // gold flash when the old high score is beaten mid-run
         if (goldFlash > 0f) {
@@ -1520,6 +1566,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             {"Your score is the distance you run, in metres.",
              "Your base speed keeps rising the longer you survive.",
              "Sprinting adds speed on top — let go to fall back to base speed.",
+             "Flowers +20 each, +100 for a full trail of 5. Golden flowers +150.",
              "Near misses earn +25. Snails give +10 and slow you down.",
              "Pass your best score and the screen flashes gold."},
             {"Sun / moon button (start screen): light or dark mode.",
@@ -2029,6 +2076,174 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
         c.drawPath(path, p);
         p.setStyle(Paint.Style.FILL);
+    }
+
+    private void drawPickupFx(Canvas c) {
+        if (pinkFlash > 0f) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.argb((int) (pinkFlash * pinkFlash * 70), 255, 140, 200));
+            c.drawRect(0, 0, W, H, p);
+        }
+        if (popTimer > 0f && state == RUN) {
+            float t = 1f - popTimer / 1.0f;          // 0 -> 1 over the pop's life
+            float a = clamp(popTimer * 2.5f, 0f, 1f);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * (0.07f + 0.02f * (1f - t)));
+            txt.setColor((popColor & 0x00FFFFFF) | ((int) (255 * a) << 24));
+            c.drawText(popText, cx, H * (0.46f - 0.08f * t), txt);
+            txt.setColor(Color.WHITE);
+        }
+    }
+
+    // ---- score flowers ------------------------------------------------------------
+
+    /** Five flowers in a gentle curve across the field, starting off to one side. */
+    private void spawnFlowerTrail(float z) {
+        trailId++;
+        activeTrail = trailId;
+        trailGot = 0;
+        trailMissed = 0;
+        float side = rnd.nextBoolean() ? 1f : -1f;
+        float x0 = predictX(z) + side * (2f + rnd.nextFloat() * 6f);
+        float drift = -side * (0.6f + rnd.nextFloat() * 1.2f);   // sweeps back across
+        float bend = (rnd.nextFloat() - 0.5f) * 0.5f;
+        int col = rnd.nextInt(4);
+        for (int k = 0; k < TRAIL_LEN; k++) {
+            Obj o = new Obj();
+            o.type = BLOOM;
+            o.z = z + k * 5.5f;
+            o.x = x0 + drift * k + bend * k * k;
+            o.size = 1f;
+            o.radius = 1.0f;
+            o.color = col;
+            o.trail = trailId;
+            clearAround(o.x, o.z, 2.2f, 4f);
+            objs.add(o);
+        }
+    }
+
+    /** A single golden flower worth a lot, placed near your path. */
+    private void spawnGoldBloom(float z) {
+        Obj o = new Obj();
+        o.type = GOLD_BLOOM;
+        o.z = z;
+        o.x = predictX(z) + (rnd.nextFloat() * 2f - 1f) * 7f;
+        o.size = 1.15f;
+        o.radius = 1.0f;
+        clearAround(o.x, o.z, 2.0f, 3f);
+        objs.add(o);
+    }
+
+    /** Remove obstacles that would sit right on top of a pickup. */
+    private void clearAround(float x, float z, float dx, float dz) {
+        for (int i = objs.size() - 1; i >= 0; i--) {
+            Obj b = objs.get(i);
+            if (!b.solid() || Math.abs(b.z - z) > dz) continue;
+            float lo = b.type == BRANCH ? Math.min(b.x, b.x2) : b.x - b.radius;
+            float hi = b.type == BRANCH ? Math.max(b.x, b.x2) : b.x + b.radius;
+            if (x > lo - dx && x < hi + dx) objs.remove(i);
+        }
+    }
+
+    private void collectFlower(Obj o) {
+        flowersRun++;
+        pinkFlash = 1f;
+        if (o.type == GOLD_BLOOM) {
+            bonus += GOLD_PTS;
+            popText = "GOLDEN FLOWER  +" + GOLD_PTS;
+            popColor = 0xFFFFD45A;
+            popTimer = 1.3f;
+            goldFlash = Math.max(goldFlash, 0.6f);
+            buzz(70);
+            return;
+        }
+        bonus += FLOWER_PTS;
+        popText = "+" + FLOWER_PTS;
+        popColor = 0xFFFFA8D8;
+        popTimer = 1.0f;
+        if (o.trail == activeTrail) {
+            trailGot++;
+            if (trailGot == TRAIL_LEN && trailMissed == 0) {
+                bonus += BOUQUET_PTS;
+                popText = "BOUQUET!  +" + (FLOWER_PTS + BOUQUET_PTS);
+                popColor = 0xFFFFD45A;
+                popTimer = 1.4f;
+                buzz(60);
+            }
+        }
+    }
+
+    private void buzz(int ms) {
+        try {
+            Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
+            if (v != null && v.hasVibrator()) {
+                v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private static final int[] BLOOM_COLS = {0xFFFF6FAE, 0xFFB47CFF, 0xFFFF9A3C, 0xFF5FC8FF};
+
+    /** A big glowing flower on a stem; gold ones sparkle. */
+    private void drawBloom(Canvas c, Obj o) {
+        boolean gold = o.type == GOLD_BLOOM;
+        float k = o.size;
+        float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 5f + o.z * 0.3f);
+        float sway = (float) Math.sin(animTime * 2.2f + o.x) * 4f;
+        int petal = gold ? 0xFFFFCF3A : BLOOM_COLS[o.color % BLOOM_COLS.length];
+        float hy = -1.05f * k;   // flower head height
+
+        // halo
+        p.setStyle(Paint.Style.FILL);
+        p.setColor((petal & 0x00FFFFFF) | ((int) ((gold ? 90 : 55) + 50 * pulse) << 24));
+        c.drawCircle(0f, hy, (gold ? 0.95f : 0.7f) * k + 0.08f * pulse, p);
+
+        c.save();
+        c.rotate(sway, 0f, 0f);
+        // stem and leaves
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeWidth(0.06f * k);
+        p.setColor(fog(0xFF3E8F3A));
+        c.drawLine(0f, 0f, 0f, hy, p);
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(fog(0xFF4FA444));
+        rect.set(0f, -0.45f * k, 0.32f * k, -0.33f * k);
+        c.drawOval(rect, p);
+        rect.set(-0.3f * k, -0.62f * k, 0f, -0.5f * k);
+        c.drawOval(rect, p);
+
+        // petals
+        int petals = gold ? 8 : 6;
+        p.setColor(fog(petal));
+        float spin = gold ? animTime * 40f : 0f;
+        for (int i = 0; i < petals; i++) {
+            c.save();
+            c.rotate(spin + i * 360f / petals, 0f, hy);
+            rect.set(-0.12f * k, hy - 0.42f * k, 0.12f * k, hy - 0.06f * k);
+            c.drawOval(rect, p);
+            c.restore();
+        }
+        p.setColor(fog(gold ? 0xFFFFF4B0 : 0xFFFFE15A));
+        c.drawCircle(0f, hy, 0.13f * k, p);
+        c.restore();
+
+        if (gold) {
+            // twinkling sparkles
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(0.04f);
+            for (int i = 0; i < 4; i++) {
+                float ph = (animTime * 1.5f + i * 0.25f) % 1f;
+                float ang = (float) (i * Math.PI / 2 + animTime);
+                float r = 0.75f + 0.35f * ph;
+                float sx = (float) Math.cos(ang) * r, sy = hy + (float) Math.sin(ang) * r;
+                float sz = 0.12f * (1f - Math.abs(ph - 0.5f) * 2f);
+                p.setColor(Color.argb((int) (255 * (1f - ph)), 255, 250, 210));
+                c.drawLine(sx - sz, sy, sx + sz, sy, p);
+                c.drawLine(sx, sy - sz, sx, sy + sz, p);
+            }
+            p.setStyle(Paint.Style.FILL);
+        }
     }
 
     /** Sun (light mode) or moon (dark mode); tap to switch. */
