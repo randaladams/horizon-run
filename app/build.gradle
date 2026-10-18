@@ -19,7 +19,14 @@ android {
         minSdk 26
         targetSdk 36
         versionCode buildNumber
-        versionName "1.1.${buildNumber}"
+        versionName "1.2.${buildNumber}"
+        // The hidden free/full test switch only exists in the side-loaded test APK,
+        // never in the Play Store bundle (which is the one signed with the upload key).
+        buildConfigField "boolean", "ALLOW_TEST_UNLOCK", uploadStore ? "false" : "true"
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     signingConfigs {
@@ -58,4 +65,5 @@ android {
 dependencies {
     implementation 'com.google.android.gms:play-services-ads:23.6.0'
     implementation 'com.google.android.ump:user-messaging-platform:3.1.0'
+    implementation 'com.android.billingclient:billing:7.1.1'
 }

@@ -44,7 +44,8 @@ import java.util.Random;
  * visible arc that bends down from the centre toward the screen edges. Objects rise
  * up over that arc as you run toward them.
  */
-public class GameView extends SurfaceView implements SurfaceHolder.Callback, Runnable, SensorEventListener, Ads.Listener {
+public class GameView extends SurfaceView implements SurfaceHolder.Callback, Runnable, SensorEventListener,
+        Ads.Listener, Billing.Listener {
 
     // ---- world tuning -------------------------------------------------------------
     private static final float EYE = 1.7f;          // camera height
@@ -77,13 +78,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float[] verts;       // rock outline
         int color;
         int trail = -1;      // which flower trail this bloom belongs to
+        boolean wallPiece;   // part of a solid rock wall
         boolean judged;      // collision / near-miss already evaluated
 
         boolean solid() { return type < GRASS; }
         boolean decor() { return type == GRASS || type == FLOWER; }
     }
 
-    private static final int MENU = 0, RUN = 1, CRASH = 2, TUTORIAL = 3, SCORES = 4;
+    private static final int MENU = 0, RUN = 1, CRASH = 2, TUTORIAL = 3, SCORES = 4, STATS = 5, UPGRADE = 6;
 
     // ---- threading / system -------------------------------------------------------
     private final SurfaceHolder holder;
@@ -212,6 +214,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private static final int MAX_HISTORY = 10;
     private final ArrayList<long[]> history = new ArrayList<>();   // {time, score, flowers, secs, newBest, continued}
     private boolean runLogged;           // this run already has a row (updated after a continue)
+    private boolean statsPending;        // the run ended but its stats aren't added yet
     private volatile boolean scoresReq, backReq, privacyReq;
     // back button: pause the run first, end it on a second press; exit needs two presses too
     private volatile boolean paused, backInRun;
@@ -230,6 +233,32 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     // ground cover: 0 grass, 1 snow, 2 fallen leaves, 3 brown winter grass
     private int groundCover;
     private static final int COVER_GRASS = 0, COVER_SNOW = 1, COVER_LEAVES = 2, COVER_WINTER = 3;
+
+    // ---- full version ---------------------------------------------------------------
+    private Billing billing;
+    private volatile boolean fullOwned;       // bought through Google Play
+    private boolean testFull;                 // hidden test switch (test builds only)
+    private volatile boolean upgradeReq, buyReq, statsReq, modeReq, themePickReq, toggleTestFull;
+    private volatile String billingMsg = "";
+    private volatile float billingMsgTimer;
+    private int upgradeReturn = MENU;         // where "Not now" goes back to
+    private boolean zenMode;                  // chosen on the start screen (full version)
+    private boolean zenRun;                   // the current run is a zen run
+    private int themePick = -1;               // -1 follows the calendar (full version picker)
+    private volatile long bestDownAt;
+    private Progress progress;
+    // per-run counters for stats and badges
+    private int runGold, runJumps, runHighJumps, runBears, runSnails, runClose;
+    private float lastWallJump = -10f;
+    private String badgeToast = "";
+    private float badgeToastTimer;
+    private static final String[] THEME_SHORT = {
+            "Normal", "New Year", "Valentine", "St Patrick", "Easter",
+            "July 4th", "Halloween", "Thanksgiving", "Christmas"};
+
+    private boolean isFull() {
+        return fullOwned || (BuildConfig.ALLOW_TEST_UNLOCK && testFull);
+    }
 
     // ---- high-score line -----------------------------------------------------------
     private static final int BESTLINE = 12;
@@ -303,6 +332,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         applyTheme();
 
         bestLine.type = BESTLINE;
+        progress = new Progress(prefs);
+        fullOwned = prefs.getBoolean("fullOwned", false);
+        testFull = prefs.getBoolean("testFull", false);
+        themePick = prefs.getInt("themePick", -1);
+        zenMode = prefs.getBoolean("zenMode", false);
         refreshHoliday();
         loadHistory();
         loadSounds();
@@ -439,19 +473,39 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 }
                 if (waitingForAd) return true;
                 if (exitPromptShowing() && (state == MENU || state == CRASH)) {
+                    if (!isFull() && inRect(e, exitUpL(), exitUpT(), exitUpR(), exitUpB())) upgradeReq = true;
                     exitPromptAt = 0;      // tap dismisses "press back again to exit"
                     return true;
                 }
                 if (state == SCORES) {
                     if (inScoresTitle(e)) titleDownAt = e.getEventTime();
+                    if (BuildConfig.ALLOW_TEST_UNLOCK && inScoresBest(e)) bestDownAt = e.getEventTime();
                     if (inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) backReq = true;
                     else if (inRect(e, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB())) resetTap = true;
+                    else if (inRect(e, privBtnL(), resetBtnT(), privBtnR(), resetBtnB())) statsReq = true;
+                    return true;
+                }
+                if (state == STATS) {
+                    if (inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) backReq = true;
                     else if (ads != null && ads.privacyOptionsRequired()
                             && inRect(e, privBtnL(), resetBtnT(), privBtnR(), resetBtnB())) privacyReq = true;
                     return true;
                 }
+                if (state == UPGRADE) {
+                    if (inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) backReq = true;
+                    else if (!isFull() && inRect(e, buyBtnL(), buyBtnT(), buyBtnR(), buyBtnB())) buyReq = true;
+                    return true;
+                }
                 if (state == MENU && inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) {
                     tutStart = true;
+                    return true;
+                }
+                if (state == MENU && inRect(e, modeBtnL(), howBtnT(), modeBtnL() + midBtnW(), howBtnB())) {
+                    modeReq = true;
+                    return true;
+                }
+                if (state == MENU && inRect(e, pickBtnL(), howBtnT(), pickBtnL() + midBtnW(), howBtnB())) {
+                    themePickReq = true;
                     return true;
                 }
                 if (state == CRASH && canOfferContinue()
@@ -485,7 +539,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 // hidden theme preview: hold the scoreboard title for a moment
                 if (state == SCORES && titleDownAt > 0 && inScoresTitle(e)
                         && e.getEventTime() - titleDownAt > 600) cycleHoliday = true;
+                // hidden free/full switch for testing: hold "BEST" on the scoreboard
+                if (BuildConfig.ALLOW_TEST_UNLOCK && state == SCORES && bestDownAt > 0 && inScoresBest(e)
+                        && e.getEventTime() - bestDownAt > 600) toggleTestFull = true;
                 titleDownAt = 0;
+                bestDownAt = 0;
                 break;
             default:
                 break;
@@ -507,7 +565,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private boolean inScoresTitle(MotionEvent e) {
         float pw = Math.min(W * 0.8f, H * 1.9f);
-        return e.getX() > cx - pw / 2 && e.getX() < cx + pw / 2 && e.getY() < H * 0.17f;
+        return e.getX() > cx - pw / 2 && e.getX() < cx && e.getY() < H * 0.17f;
+    }
+
+    private boolean inScoresBest(MotionEvent e) {
+        float pw = Math.min(W * 0.8f, H * 1.9f);
+        return e.getX() >= cx && e.getX() < cx + pw / 2 && e.getY() < H * 0.17f;
     }
 
     private void pointerDown(MotionEvent e) {
@@ -590,7 +653,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         } catch (Exception e) {
             holidayAuto = Holidays.NONE;
         }
-        int h = holidayPreview >= 0 ? holidayPreview : holidayAuto;
+        int h = holidayPreview >= 0 ? holidayPreview
+                : (isFull() && themePick >= 0 ? themePick : holidayAuto);
         if (h != holiday) {
             holiday = h;
             themeDirty = true;
@@ -644,6 +708,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         newHigh = false;
         goldFlash = 0;
         bestAtStart = best;
+        zenRun = zenMode && isFull();
+        if (zenRun) bestAtStart = 0;      // zen runs don't chase the high score
+        runGold = runJumps = runHighJumps = runBears = runSnails = runClose = 0;
+        statsPending = false;
         continuedThisRun = false;
         runLogged = false;
         invuln = 0;
@@ -680,6 +748,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 bestAtStart = 0;
                 newHigh = false;
                 history.clear();
+                progress.reset();
                 prefs.edit().putInt("best", 0).putString("history", "").apply();
                 resetConfirm = 0f;
                 msg = "SCORES RESET";
@@ -720,8 +789,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         if (continueTap) {
             continueTap = false;
             if (canOfferContinue()) {
-                waitingForAd = true;
-                ads.showRewarded();
+                if (isFull()) {
+                    resumeAfterCrash();          // full version: free revive, no ad
+                } else {
+                    waitingForAd = true;
+                    ads.showRewarded();
+                }
             }
         }
         if (waitingForAd) {
@@ -743,8 +816,64 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 state = MENU;
                 menuTime = 0;
                 bestAtStart = best;
+            } else if (state == STATS) {
+                state = SCORES;
+            } else if (state == UPGRADE) {
+                state = upgradeReturn == SCORES ? SCORES : MENU;
+                menuTime = 0;
             } else if (state == TUTORIAL) {
                 tutSkip = true;
+            }
+        }
+        if (billingMsgTimer > 0) billingMsgTimer -= dt;
+        if (badgeToastTimer > 0) badgeToastTimer -= dt;
+        if (toggleTestFull) {
+            toggleTestFull = false;
+            testFull = !testFull;
+            prefs.edit().putBoolean("testFull", testFull).apply();
+            billingMsg = "Test switch: now playing the " + (isFull() ? "FULL" : "FREE") + " version";
+            billingMsgTimer = 3f;
+            refreshHoliday();
+        }
+        if (upgradeReq) {
+            upgradeReq = false;
+            if (state == MENU || state == CRASH || state == SCORES) openUpgrade();
+        }
+        if (buyReq) {
+            buyReq = false;
+            if (billing != null) billing.buy();
+            else onBillingMessage("The store isn't available right now.");
+        }
+        if (statsReq) {
+            statsReq = false;
+            if (state == SCORES) {
+                if (isFull()) state = STATS;
+                else openUpgrade();
+            }
+        }
+        if (modeReq) {
+            modeReq = false;
+            if (state == MENU) {
+                if (isFull()) {
+                    zenMode = !zenMode;
+                    prefs.edit().putBoolean("zenMode", zenMode).apply();
+                    play(sFlower, 0.8f);
+                } else openUpgrade();
+            }
+        }
+        if (themePickReq) {
+            themePickReq = false;
+            if (state == MENU) {
+                if (isFull()) {
+                    // Auto (calendar) -> each holiday -> plain flowers -> Auto
+                    if (themePick == -1) themePick = 1;
+                    else if (themePick == Holidays.NONE) themePick = -1;
+                    else themePick = (themePick + 1) % Holidays.COUNT;
+                    prefs.edit().putInt("themePick", themePick).apply();
+                    holidayPreview = -1;
+                    refreshHoliday();
+                    play(sFlower, 0.8f);
+                } else openUpgrade();
             }
         }
         if (cycleHoliday) {
@@ -771,8 +900,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             return;
         }
 
-        if (state == MENU || state == SCORES) {
-            if (state == SCORES) {
+        if (state == MENU || state == SCORES || state == STATS || state == UPGRADE) {
+            if (state != MENU) {
                 // background keeps jogging; taps are handled by the buttons only
                 menuTime += dt;
                 advanceWorld(6f * dt, dt, false);
@@ -800,6 +929,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             if (tapped && crashTimer > 0.9f) {
                 // back to the start screen rather than straight into a new run
                 tapped = false;
+                finishRunStats();
                 resetRun();
                 state = MENU;
                 menuTime = 0;
@@ -826,7 +956,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         elapsed += dt;
         if (invuln > 0f) invuln -= dt;
         baseTime += dt;
-        float base = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
+        float base = zenRun ? Math.min(BASE_SPEED + baseTime * SPEED_GAIN * 0.5f, 30f)
+                : Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
+        if (score() >= 1000 && !zenRun) badge(Progress.KM1);
+        if (score() >= 5000 && !zenRun) badge(Progress.KM5);
         if (touching) boost = Math.min(boost + BOOST_GAIN * dt, MAX_BOOST);
         else boost = Math.max(0f, boost - BOOST_DECAY * dt);
         float target = base + boost;
@@ -927,6 +1060,29 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     public void setAds(Ads a) { ads = a; }
 
+    public void setBilling(Billing b) { billing = b; }
+
+    /** Paid players never need the ads SDK started. */
+    public boolean wantsAds() { return !isFull(); }
+
+    @Override
+    public void onFullVersionOwned(boolean owned) {
+        boolean was = fullOwned;
+        fullOwned = owned;
+        prefs.edit().putBoolean("fullOwned", owned).apply();
+        if (owned && !was) {
+            billingMsg = "Thank you! The full version is unlocked.";
+            billingMsgTimer = 4f;
+            themeDirty = true;
+        }
+    }
+
+    @Override
+    public void onBillingMessage(String message) {
+        billingMsg = message;
+        billingMsgTimer = 4f;
+    }
+
     /** Called by the ads code (main thread) when a full-screen ad closes. */
     @Override
     public void onAdFinished(boolean wasRewardedAd, boolean rewarded) {
@@ -937,7 +1093,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     /** Android back button: returns true if the game used it. */
     public boolean handleBack() {
-        if (state == SCORES || state == TUTORIAL) {
+        if (state == SCORES || state == TUTORIAL || state == STATS || state == UPGRADE) {
             backReq = true;
             return true;
         }
@@ -957,15 +1113,55 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 && android.os.SystemClock.uptimeMillis() - exitPromptAt < EXIT_WINDOW_MS;
     }
 
+    /** Unlocks a badge; full-version players see a little banner. */
+    private void badge(int id) {
+        if (state != RUN || zenRun) return;
+        if (progress.unlock(id) && isFull()) {
+            badgeToast = Progress.BADGE_NAME[id];
+            badgeToastTimer = 2.6f;
+            play(sBouquet, 0.6f, 1.2f);
+        }
+    }
+
+    /** Adds a finished run to the lifetime stats (once, when the player leaves it). */
+    private void finishRunStats() {
+        if (!statsPending || zenRun) { statsPending = false; return; }
+        statsPending = false;
+        progress.addRun(score(), (long) distance, flowersRun, runGold, runJumps, runHighJumps,
+                runBears, runSnails, runClose, (long) elapsed);
+        badge2(Progress.FIRST_RUN);
+        if (progress.distance >= 100_000) badge2(Progress.GLOBETROTTER);
+    }
+
+    /** Badge check outside a run (after it ends). */
+    private void badge2(int id) {
+        if (progress.unlock(id) && isFull()) {
+            badgeToast = Progress.BADGE_NAME[id];
+            badgeToastTimer = 2.6f;
+        }
+    }
+
+    private void openUpgrade() {
+        upgradeReturn = state == SCORES ? SCORES : MENU;
+        if (state == CRASH) {
+            finishRunStats();
+            resetRun();
+        }
+        state = UPGRADE;
+        menuTime = 0;
+    }
+
     /** Ends the current run on purpose (back button): saves it like a crash, no crash effects. */
     private void quitRun() {
         int score = score();
-        newHigh = score > bestAtStart && bestAtStart > 0;
-        if (score > best) {
+        newHigh = !zenRun && score > bestAtStart && bestAtStart > 0;
+        statsPending = !zenRun;
+        if (!zenRun && score > best) {
             best = score;
             prefs.edit().putInt("best", best).apply();
         }
         logRun();
+        finishRunStats();
         paused = false;
         resetRun();
         state = MENU;
@@ -1071,8 +1267,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             String[] f = row.split(",");
             if (f.length < 6) continue;
             try {
-                long[] r = new long[6];
-                for (int i = 0; i < 6; i++) r[i] = Long.parseLong(f[i]);
+                long[] r = new long[7];
+                for (int i = 0; i < Math.min(7, f.length); i++) r[i] = Long.parseLong(f[i]);
                 history.add(r);
             } catch (NumberFormatException ignored) { }
         }
@@ -1095,7 +1291,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     /** Newest run first. After a continue, the same row is updated instead of adding one. */
     private void logRun() {
         long[] r = {System.currentTimeMillis(), score(), flowersRun, (long) elapsed,
-                newHigh ? 1 : 0, continuedThisRun ? 1 : 0};
+                newHigh ? 1 : 0, continuedThisRun ? 1 : 0, zenRun ? 1 : 0};
         if (runLogged && !history.isEmpty()) {
             history.set(0, r);
         } else {
@@ -1109,13 +1305,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     // ---- continue after a crash (rewarded ad) -----------------------------------------
 
     private boolean canOfferContinue() {
-        return state == CRASH && crashTimer > 0.5f && !continuedThisRun && !waitingForAd
-                && ads != null && ads.rewardedReady();
+        if (state != CRASH || crashTimer <= 0.5f || continuedThisRun || waitingForAd) return false;
+        return isFull() || (ads != null && ads.rewardedReady());
     }
 
     private void resumeAfterCrash() {
         continuedThisRun = true;
-        gamesSinceAd = 0;            // they just watched an ad
+        statsPending = false;
+        if (!isFull()) gamesSinceAd = 0;   // they just watched an ad
         // clear the way ahead so you don't crash straight away again
         for (int i = objs.size() - 1; i >= 0; i--) {
             Obj o = objs.get(i);
@@ -1135,7 +1332,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     /** Start a fresh run, first showing an interstitial if one is due. */
     private void requestNewRun() {
         // gamesSinceAd = games played since the last ad. After 4, the next start shows one.
-        if (gamesSinceAd >= GAMES_PER_AD && ads != null && ads.interstitialReady()) {
+        if (!isFull() && gamesSinceAd >= GAMES_PER_AD && ads != null && ads.interstitialReady()) {
             gamesSinceAd = 0;
             waitingForAd = true;
             pendingStartAfterAd = true;
@@ -1161,15 +1358,27 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 float gapToPlayer = clearance(o);
                 if (gapToPlayer < 0f && jumpH >= clearHeight(o)) {
                     boolean big = o.type == BEAR || o.type == DEER;
+                    if (big) runHighJumps++; else runJumps++;
+                    if (o.type == BEAR) {
+                        runBears++;
+                        badge(Progress.BEAR1);
+                        if (progress.bears + runBears >= 10) badge(Progress.BEARS10);
+                    }
+                    if (o.wallPiece && animTime - lastWallJump > 1f) {
+                        lastWallJump = animTime;
+                        badge(Progress.WALL);
+                    }
                     bonus += big ? 25 : 10;
                     msg = big ? "HIGH JUMP!  +25" : "JUMP!  +10";
                     msgTimer = 0.9f;
-                } else if (gapToPlayer < 0f && invuln > 0f) {
-                    // still shielded after continuing
+                } else if (gapToPlayer < 0f && (invuln > 0f || zenRun)) {
+                    // shielded after continuing, or zen mode: run straight through
                 } else if (gapToPlayer < 0f) {
                     crash();
                     return;
                 } else if (gapToPlayer < 0.7f) {
+                    runClose++;
+                    if (runClose >= 10) badge(Progress.CLOSE10);
                     bonus += 25;
                     msg = "CLOSE CALL  +25";
                     msgTimer = 1.0f;
@@ -1206,7 +1415,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             if (gone) objs.remove(i);
         }
         // in the menu, keep the scene populated
-        if (state == MENU || state == SCORES) {
+        if (state == MENU || state == SCORES || state == STATS || state == UPGRADE) {
             spawnAcc += dz;
             float g = 12f * (48f / (2f * FIELD));
             while (spawnAcc >= g) { spawnAcc -= g; spawnObstacle(SPAWN_Z, false); }
@@ -1227,7 +1436,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void crash() {
+        if (zenRun) return;
         play(sCrash, 0.8f);
+        statsPending = true;
         state = CRASH;
         crashTimer = 0;
         shake = 1f;
@@ -1294,6 +1505,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         for (float x = center - half; x <= center + half; x += 2.4f) {
             if (!wall && Math.abs(x - gapX) < 2.4f) continue;
             Obj o = make(kind, x + (rnd.nextFloat() - 0.5f) * 0.3f, z + (rnd.nextFloat() - 0.5f) * 1.5f);
+            o.wallPiece = wall;
             if (kind == PINE) { o.size = 1f; o.radius = 1.05f; }
             else { o.size = 1.15f; o.radius = 1.05f; }
             objs.add(o);
@@ -2013,6 +2225,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         if (state == RUN || state == CRASH) {
             txt.setTextSize(H * 0.075f);
             c.drawText(score() + " m", pad, pad + H * 0.06f, txt);
+            if (zenRun) {
+                txt.setTextAlign(Paint.Align.CENTER);
+                txt.setTextSize(H * 0.032f);
+                txt.setColor(0xCC9CFFC8);
+                c.drawText("ZEN MODE  \u2022  press BACK twice to finish", cx, H - pad * 0.6f, txt);
+                txt.setColor(Color.WHITE);
+                txt.setTextAlign(Paint.Align.LEFT);
+            }
             txt.setTextSize(H * 0.035f);
             txt.setColor(0xCCFFFFFF);
             c.drawText("BEST " + best, pad, pad + H * 0.11f, txt);
@@ -2065,6 +2285,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setTextSize(H * 0.13f);
             c.drawText("HORIZON RUN", cx, H * 0.36f, txt);
+            if (isFull()) {
+                txt.setTextSize(H * 0.032f);
+                txt.setColor(0xFFFFD45A);
+                c.drawText("FULL VERSION", cx + H * 0.52f, H * 0.255f, txt);
+                txt.setColor(Color.WHITE);
+            }
             if (holiday != Holidays.NONE) {
                 float bob = (float) Math.sin(menuTime * 2.5f) * H * 0.008f;
                 txt.setTextSize(H * 0.065f);
@@ -2088,12 +2314,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setColor(Color.WHITE);
             if (best > 0) {
                 txt.setTextSize(H * 0.035f);
-                c.drawText("Best: " + best + " m", cx, H * 0.93f, txt);
+                c.drawText("Best: " + best + " m", cx, H * 0.445f, txt);
             }
             if (tiltSensor == null) {
                 txt.setColor(0xFFFF8A80);
                 txt.setTextSize(H * 0.035f);
-                c.drawText("No tilt sensor found on this device", cx, H * 0.44f, txt);
+                c.drawText("No tilt sensor found on this device", cx, H * 0.13f, txt);
                 txt.setColor(Color.WHITE);
             }
         }
@@ -2148,6 +2374,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF, "SCORES");
         }
         if (state == SCORES) drawScoreboard(c);
+        if (state == STATS) drawStats(c);
+        if (state == UPGRADE) drawUpgrade(c);
+        drawToasts(c);
 
         // shield blink after continuing
         if (state == RUN && invuln > 0f) {
@@ -2158,7 +2387,16 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawRect(0, 0, W, H, p);
             p.setStyle(Paint.Style.FILL);
         }
-        if (state == MENU) drawHowButton(c);
+        if (state == MENU) {
+            drawHowButton(c);
+            boolean full = isFull();
+            pill2(c, modeBtnL(), howBtnT(), modeBtnL() + midBtnW(), howBtnB(), "MODE",
+                    full ? (zenMode ? "ZEN (no crashes)" : "NORMAL") : "ZEN MODE", !full,
+                    full && zenMode ? 0xAA2E7D5A : 0x66000000);
+            pill2(c, pickBtnL(), howBtnT(), pickBtnL() + midBtnW(), howBtnB(), "THEME",
+                    full ? (themePick < 0 ? "AUTO (" + THEME_SHORT[holidayAuto] + ")" : THEME_SHORT[themePick])
+                         : "ANY HOLIDAY", !full, 0x66000000);
+        }
 
         // soft blue wash when a snail slows you down
         if (blueFlash > 0f) {
@@ -2187,8 +2425,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setColor(Color.WHITE);
         }
         if ((state == MENU || state == CRASH) && exitPromptShowing()) {
-            float bw = W * 0.5f, bh = H * 0.24f;
-            rect.set(cx - bw / 2, H * 0.38f, cx + bw / 2, H * 0.38f + bh);
+            float bw = W * 0.5f, bh = isFull() ? H * 0.24f : H * 0.36f;
+            rect.set(cx - bw / 2, H * 0.34f, cx + bw / 2, H * 0.34f + bh);
             p.setStyle(Paint.Style.FILL);
             p.setColor(0xEE101828);
             c.drawRoundRect(rect, H * 0.03f, H * 0.03f, p);
@@ -2200,11 +2438,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setColor(Color.WHITE);
             txt.setTextSize(H * 0.055f);
-            c.drawText("Leave Horizon Run?", cx, rect.top + bh * 0.42f, txt);
+            float fy = isFull() ? 1f : 0.24f / 0.36f;
+            c.drawText("Leave Horizon Run?", cx, rect.top + bh * 0.42f * fy, txt);
             txt.setTextSize(H * 0.035f);
             txt.setColor(0xCCFFFFFF);
-            c.drawText("Press BACK again to exit  \u2022  tap to stay", cx, rect.top + bh * 0.75f, txt);
+            c.drawText("Press BACK again to exit  \u2022  tap to stay", cx, rect.top + bh * 0.75f * fy, txt);
             txt.setColor(Color.WHITE);
+            if (!isFull()) {
+                float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 4f);
+                pill(c, exitUpL(), exitUpT(), exitUpR(), exitUpB(), 0xDD8A6A10,
+                        Color.argb((int) (150 + 105 * pulse), 255, 212, 70),
+                        "GO FULL VERSION \u2014 NO ADS  " + priceText());
+            }
         }
 
         // gold flash when the old high score is beaten mid-run
@@ -2727,6 +2972,241 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private float resetBtnB() { return H - Math.max(W * 0.02f, H * 0.04f); }
     private float resetBtnT() { return resetBtnB() - H * 0.09f; }
 
+    // ---- start-screen middle buttons, upgrade buttons ---------------------------------
+    private float midBtnW() { return W * 0.2f; }
+    private float midGap() { return (howBtnL() - resetBtnR() - 2 * midBtnW()) / 3f; }
+    private float modeBtnL() { return resetBtnR() + midGap(); }
+    private float pickBtnL() { return modeBtnL() + midBtnW() + midGap(); }
+    private float exitUpL() { return cx - W * 0.21f; }
+    private float exitUpR() { return cx + W * 0.21f; }
+    private float exitUpT() { return H * 0.34f + H * 0.25f; }
+    private float exitUpB() { return H * 0.34f + H * 0.33f; }
+    private float buyBtnL() { return cx - W * 0.16f; }
+    private float buyBtnR() { return cx + W * 0.16f; }
+    private float buyBtnT() { return resetBtnT() - H * 0.02f; }
+    private float buyBtnB() { return resetBtnB(); }
+
+    private String priceText() {
+        String p = billing != null ? billing.price() : null;
+        return p != null ? p : "$1.99";
+    }
+
+    /** Two-line pill (small caption + value) with an optional gold "FULL" tag. */
+    private void pill2(Canvas c, float l, float t, float r, float b, String top, String value,
+                       boolean locked, int fill) {
+        pill(c, l, t, r, b, fill, 0x99FFFFFF, "");
+        txt.setTextAlign(Paint.Align.CENTER);
+        float midY = (t + b) * 0.5f;
+        if (top.isEmpty()) {
+            txt.setTextSize(H * 0.03f);
+            txt.setColor(Color.WHITE);
+            c.drawText(value, (l + r) * 0.5f, midY + H * 0.011f, txt);
+        } else {
+            txt.setTextSize(H * 0.022f);
+            txt.setColor(0xAAFFFFFF);
+            c.drawText(top, (l + r) * 0.5f, midY - H * 0.008f, txt);
+            txt.setTextSize(H * 0.028f);
+            txt.setColor(Color.WHITE);
+            c.drawText(value, (l + r) * 0.5f, midY + H * 0.026f, txt);
+        }
+        if (locked) {
+            float tw = H * 0.085f, th = H * 0.034f;
+            rect.set(r - tw * 0.85f, t - th * 0.55f, r + tw * 0.15f, t + th * 0.45f);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xFFFFC23A);
+            c.drawRoundRect(rect, th * 0.5f, th * 0.5f, p);
+            txt.setTextSize(H * 0.02f);
+            txt.setColor(0xFF3A2A00);
+            c.drawText("FULL", rect.centerX(), rect.centerY() + H * 0.007f, txt);
+        }
+        txt.setColor(Color.WHITE);
+    }
+
+    /** Badge banner during a run + store messages anywhere. */
+    private void drawToasts(Canvas c) {
+        if (badgeToastTimer > 0f && isFull()) {
+            float a = clamp(badgeToastTimer * 2f, 0f, 1f);
+            float bw = W * 0.36f, bh = H * 0.1f, top = H * 0.04f;
+            rect.set(cx - bw / 2, top, cx + bw / 2, top + bh);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.argb((int) (220 * a), 40, 30, 0));
+            c.drawRoundRect(rect, bh * 0.5f, bh * 0.5f, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(2f, H * 0.004f));
+            p.setColor(Color.argb((int) (255 * a), 255, 212, 70));
+            c.drawRoundRect(rect, bh * 0.5f, bh * 0.5f, p);
+            p.setStyle(Paint.Style.FILL);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * 0.024f);
+            txt.setColor(Color.argb((int) (220 * a), 255, 212, 70));
+            c.drawText("BADGE UNLOCKED", cx, top + bh * 0.38f, txt);
+            txt.setTextSize(H * 0.038f);
+            txt.setColor(Color.argb((int) (255 * a), 255, 255, 255));
+            c.drawText(badgeToast, cx, top + bh * 0.8f, txt);
+            txt.setColor(Color.WHITE);
+        }
+        if (billingMsgTimer > 0f && !billingMsg.isEmpty()) {
+            float a = clamp(billingMsgTimer * 2f, 0f, 1f);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * 0.036f);
+            float w = txt.measureText(billingMsg) + H * 0.08f;
+            rect.set(cx - w / 2, H * 0.06f, cx + w / 2, H * 0.14f);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.argb((int) (220 * a), 16, 24, 40));
+            c.drawRoundRect(rect, H * 0.04f, H * 0.04f, p);
+            txt.setColor(Color.argb((int) (255 * a), 255, 233, 140));
+            c.drawText(billingMsg, cx, H * 0.113f, txt);
+            txt.setColor(Color.WHITE);
+        }
+    }
+
+    private void panel(Canvas c, float l, float t, float r, float b) {
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0x99000000);
+        c.drawRect(0, 0, W, H, p);
+        rect.set(l, t, r, b);
+        p.setColor(dark ? 0xE00A1226 : 0xE0142A4A);
+        c.drawRoundRect(rect, H * 0.035f, H * 0.035f, p);
+    }
+
+    /** Full-version pitch with the buy button. */
+    private void drawUpgrade(Canvas c) {
+        float pw = Math.min(W * 0.7f, H * 1.7f);
+        float l = cx - pw / 2, r = cx + pw / 2, t = H * 0.05f, b = buyBtnT() - H * 0.03f;
+        panel(c, l, t, r, b);
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setColor(0xFFFFD45A);
+        txt.setTextSize(H * 0.03f);
+        c.drawText("HORIZON RUN", cx, t + H * 0.07f, txt);
+        txt.setColor(Color.WHITE);
+        txt.setTextSize(H * 0.065f);
+        c.drawText(isFull() ? "You have the Full Version!" : "Full Version", cx, t + H * 0.15f, txt);
+        String[] perks = {
+                "No ads \u2014 ever",
+                "Free revive every run, no ad to watch",
+                "Holiday themes any time of year",
+                "Zen mode: no crashes, just run and collect",
+                "Stats, all-time top 10 and 12 badges",
+                "Keeps all your scores \u2014 nothing is erased"};
+        txt.setTextAlign(Paint.Align.LEFT);
+        txt.setTextSize(H * 0.038f);
+        float x = l + pw * 0.14f;
+        for (int i = 0; i < perks.length; i++) {
+            float y = t + H * 0.25f + i * H * 0.075f;
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeWidth(H * 0.008f);
+            p.setColor(0xFF8CFF9E);
+            c.drawLine(x - H * 0.06f, y - H * 0.014f, x - H * 0.045f, y, p);
+            c.drawLine(x - H * 0.045f, y, x - H * 0.018f, y - H * 0.032f, p);
+            p.setStyle(Paint.Style.FILL);
+            txt.setColor(Color.WHITE);
+            c.drawText(perks[i], x, y, txt);
+        }
+        if (!isFull()) {
+            float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 4f);
+            pill(c, buyBtnL(), buyBtnT(), buyBtnR(), buyBtnB(), 0xEE1E7A3C,
+                    Color.argb((int) (150 + 105 * pulse), 140, 255, 170), "UPGRADE  " + priceText());
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * 0.026f);
+            txt.setColor(0xAAFFFFFF);
+            c.drawText("One-time purchase through Google Play", cx, b - H * 0.02f, txt);
+        }
+        pill(c, howBtnL(), howBtnT(), howBtnR(), howBtnB(), 0x66000000, 0x99FFFFFF,
+                isFull() ? "BACK" : "NOT NOW");
+        txt.setColor(Color.WHITE);
+    }
+
+    private static String km(long metres) {
+        return String.format(Locale.US, "%.1f km", metres / 1000.0);
+    }
+
+    /** Lifetime stats, all-time top 10 and badges (full version). */
+    private void drawStats(Canvas c) {
+        float l = W * 0.04f, r = W * 0.96f, t = H * 0.05f, b = resetBtnT() - H * 0.03f;
+        panel(c, l, t, r, b);
+        float w = r - l;
+        float c1 = l + w * 0.03f, c2 = l + w * 0.36f, c3 = l + w * 0.58f;
+        txt.setTextAlign(Paint.Align.LEFT);
+        txt.setTextSize(H * 0.042f);
+        txt.setColor(Color.WHITE);
+        c.drawText("STATS", c1, t + H * 0.075f, txt);
+        c.drawText("TOP 10", c2, t + H * 0.075f, txt);
+        c.drawText("BADGES  " + progress.badgeCount() + "/" + Progress.BADGES, c3, t + H * 0.075f, txt);
+
+        Progress g = progress;
+        String[][] rows = {
+                {"Runs", String.valueOf(g.runs)},
+                {"Distance", km(g.distance)},
+                {"Items collected", String.valueOf(g.items)},
+                {"Golden items", String.valueOf(g.golden)},
+                {"Jumps", String.valueOf(g.jumps)},
+                {"High jumps", String.valueOf(g.highJumps)},
+                {"Bears cleared", String.valueOf(g.bears)},
+                {"Snails", String.valueOf(g.snails)},
+                {"Close calls", String.valueOf(g.closeCalls)},
+                {"Longest run", mmss(g.longestSecs)},
+                {"Most items, one run", String.valueOf(g.mostItems)}};
+        float rowH = (b - t - H * 0.14f) / rows.length;
+        float fs = Math.min(H * 0.032f, rowH * 0.62f);
+        txt.setTextSize(fs);
+        for (int i = 0; i < rows.length; i++) {
+            float y = t + H * 0.135f + i * rowH;
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setColor(0xCCFFFFFF);
+            c.drawText(rows[i][0], c1, y, txt);
+            txt.setTextAlign(Paint.Align.RIGHT);
+            txt.setColor(Color.WHITE);
+            c.drawText(rows[i][1], c2 - w * 0.04f, y, txt);
+        }
+
+        float topRow = (b - t - H * 0.14f) / 10f;
+        txt.setTextSize(Math.min(H * 0.032f, topRow * 0.62f));
+        if (g.top.isEmpty()) {
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setColor(0x99FFFFFF);
+            c.drawText("No runs yet", c2, t + H * 0.135f, txt);
+        }
+        for (int i = 0; i < g.top.size(); i++) {
+            float y = t + H * 0.135f + i * topRow;
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setColor(i == 0 ? 0xFFFFD45A : 0xCCFFFFFF);
+            c.drawText((i + 1) + ".", c2, y, txt);
+            txt.setTextAlign(Paint.Align.RIGHT);
+            c.drawText(g.top.get(i)[0] + " m", c3 - w * 0.04f, y, txt);
+        }
+
+        // badges: 2 columns x 6 rows
+        float bw = (r - w * 0.03f - c3) / 2f;
+        float bh = (b - t - H * 0.12f) / 6f;
+        for (int i = 0; i < Progress.BADGES; i++) {
+            float x = c3 + (i % 2) * bw, y = t + H * 0.11f + (i / 2) * bh;
+            boolean got = g.has(i);
+            float cr = Math.min(bh * 0.28f, H * 0.03f);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(got ? 0xFFFFC23A : 0x33FFFFFF);
+            c.drawCircle(x + cr, y + bh * 0.4f, cr, p);
+            if (got) {
+                starPath(x + cr, y + bh * 0.4f, cr * 0.7f, 5, 0.45f, 0f);
+                p.setColor(0xFF5A3A00);
+                c.drawPath(path, p);
+            }
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setTextSize(Math.min(H * 0.028f, bh * 0.3f));
+            txt.setColor(got ? Color.WHITE : 0x88FFFFFF);
+            c.drawText(Progress.BADGE_NAME[i], x + cr * 2.5f, y + bh * 0.36f, txt);
+            txt.setTextSize(Math.min(H * 0.021f, bh * 0.24f));
+            txt.setColor(got ? 0xBBFFFFFF : 0x66FFFFFF);
+            c.drawText(Progress.BADGE_DESC[i], x + cr * 2.5f, y + bh * 0.66f, txt);
+        }
+        txt.setColor(Color.WHITE);
+
+        pill(c, howBtnL(), howBtnT(), howBtnR(), howBtnB(), 0x66000000, 0x99FFFFFF, "BACK");
+        if (ads != null && ads.privacyOptionsRequired()) {
+            pill(c, privBtnL(), resetBtnT(), privBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF, "PRIVACY");
+        }
+    }
+
     // continue button (crash screen) and privacy button (scoreboard)
     private float contBtnL() { return cx - W * 0.2f; }
     private float contBtnR() { return cx + W * 0.2f; }
@@ -2752,7 +3232,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         txt.setTextAlign(Paint.Align.CENTER);
         txt.setTextSize(H * 0.04f);
         txt.setColor(Color.WHITE);
-        c.drawText("WATCH AD TO KEEP RUNNING", cx + H * 0.03f, ty + H * 0.014f, txt);
+        c.drawText(isFull() ? "KEEP RUNNING (FREE)" : "WATCH AD TO KEEP RUNNING",
+                cx + H * 0.03f, ty + H * 0.014f, txt);
     }
 
     private static final SimpleDateFormat TIME_FMT = new SimpleDateFormat("h:mm a", Locale.getDefault());
@@ -2821,7 +3302,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         for (int i = 0; i < history.size(); i++) {
             long[] r = history.get(i);
             float ry = y + rowH * (i + 1);
-            boolean isBest = r[1] == best && best > 0;
+            boolean isBest = r[1] == best && best > 0 && !(r.length > 6 && r[6] == 1);
             if (i % 2 == 0) {
                 p.setColor(0x14FFFFFF);
                 c.drawRect(left + pw * 0.03f, ry - rowH * 0.72f, right - pw * 0.03f, ry + rowH * 0.28f, p);
@@ -2831,7 +3312,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.RIGHT);
             c.drawText(String.valueOf(i + 1), colX[0], ry, txt);
             txt.setTextAlign(Paint.Align.LEFT);
-            String tag = (r[4] == 1 ? "  \u2605" : "") + (r[5] == 1 ? "  \u25B6" : "");
+            String tag = (r[4] == 1 ? "  \u2605" : "") + (r[5] == 1 ? "  \u25B6" : "")
+                    + (r.length > 6 && r[6] == 1 ? "  ZEN" : "");
             c.drawText(when(r[0]) + tag, colX[1], ry, txt);
             txt.setTextAlign(Paint.Align.RIGHT);
             c.drawText(r[1] + " m", colX[2], ry, txt);
@@ -2856,8 +3338,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), confirm ? 0xCCB3261E : 0x66000000,
                 0x99FFFFFF, confirm ? "TAP AGAIN TO RESET" : "RESET SCORES");
         pill(c, howBtnL(), howBtnT(), howBtnR(), howBtnB(), 0x66000000, 0x99FFFFFF, "BACK");
-        if (ads != null && ads.privacyOptionsRequired()) {
-            pill(c, privBtnL(), resetBtnT(), privBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF, "PRIVACY");
+        pill2(c, privBtnL(), resetBtnT(), privBtnR(), resetBtnB(), "", "STATS & BADGES", !isFull(), 0x66000000);
+        if (BuildConfig.ALLOW_TEST_UNLOCK) {
+            txt.setTextAlign(Paint.Align.RIGHT);
+            txt.setTextSize(H * 0.024f);
+            txt.setColor(0x88FFFFFF);
+            c.drawText("test build: hold BEST to switch \u2022 now " + (isFull() ? "FULL" : "FREE"),
+                    right - pw * 0.04f, top + H * 0.125f, txt);
+            txt.setColor(Color.WHITE);
         }
         if (msgTimer > 0 && msg.equals("SCORES RESET")) {
             txt.setTextAlign(Paint.Align.CENTER);
@@ -2949,6 +3437,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private void collectSnail() {
         play(sSnail, 0.8f);
+        if (state == RUN) {
+            runSnails++;
+            if (runSnails >= 5 && !zenRun) badge(Progress.SNAILS5);
+        }
         float before = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
         baseTime = Math.max(0f, Math.min(baseTime, (MAX_BASE - BASE_SPEED) / SPEED_GAIN) - SNAIL_SLOW);
         float after = Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
@@ -3103,6 +3595,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             goldFlash = Math.max(goldFlash, 0.6f);
             buzz(70);
             play(sGolden, 1f);
+            runGold++;
+            if (runGold >= 3 && !zenRun) badge(Progress.GOLD3);
+            if (progress.items + flowersRun >= 500 && !zenRun) badge(Progress.FLORIST);
             return;
         }
         bonus += FLOWER_PTS;
@@ -3118,10 +3613,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 popTimer = 1.4f;
                 buzz(60);
                 play(sBouquet, 1f);
+                if (!zenRun) badge(Progress.BOUQUET);
                 return;
             }
         }
         play(sFlower, 0.8f);
+        if (progress.items + flowersRun >= 500 && !zenRun) badge(Progress.FLORIST);
     }
 
     private void buzz(int ms) {

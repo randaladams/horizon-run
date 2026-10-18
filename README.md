@@ -17,6 +17,12 @@ After a crash you can **watch an ad to keep running** (once per run, with a shor
 
 New to the game? Tap **How to play** on the start screen for a 13-step practice run covering steering, sprinting, jumping (including a rock wall and a high jump over a bear), each kind of obstacle, snails and the options.
 
+## Full version ($1.99 in-app purchase)
+
+One-time upgrade through Google Play (product id `full_version`); scores are kept. It removes all ads and adds: a free revive every run (no ad), a theme picker (any holiday, any time), Zen mode (no crashes), and Stats & Badges (lifetime stats, all-time top 10, 12 badges). Stats and badges are tracked for free players too, so they appear the moment someone upgrades.
+
+**Testing:** the side-loaded test APK has a hidden switch: open Scores and hold **BEST** (top-right) for a second to flip between Free and Full. The Play Store bundle doesn't include this switch.
+
 ## Install on your phone
 
 1. On your Android phone, open **https://github.com/randaladams/horizon-run/releases/tag/latest**

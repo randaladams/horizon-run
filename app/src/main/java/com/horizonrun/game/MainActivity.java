@@ -12,6 +12,7 @@ import android.window.OnBackInvokedDispatcher;
 public class MainActivity extends Activity {
 
     private GameView gameView;
+    private Billing billing;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -23,7 +24,11 @@ public class MainActivity extends Activity {
 
         Ads ads = new Ads(this, gameView);
         gameView.setAds(ads);
-        ads.start();
+        if (gameView.wantsAds()) ads.start();
+
+        billing = new Billing(this, gameView);
+        gameView.setBilling(billing);
+        billing.start();
 
         // Back button: leave the scoreboard / tutorial first, otherwise close the game.
         if (Build.VERSION.SDK_INT >= 33) {
@@ -38,6 +43,7 @@ public class MainActivity extends Activity {
         super.onResume();
         hideSystemUi();
         gameView.resume();
+        if (billing != null) billing.refreshOwned();   // picks up purchases made elsewhere
     }
 
     @Override
@@ -55,6 +61,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         gameView.release();
+        if (billing != null) billing.end();
         super.onDestroy();
     }
 
