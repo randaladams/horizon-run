@@ -221,6 +221,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private final float[] wx = new float[70], wy = new float[70], wsp = new float[70], wsz = new float[70];
     private final int[] wcol = new int[70];
     private int weatherFor = -1;
+    // ground cover: 0 grass, 1 snow, 2 fallen leaves, 3 brown winter grass
+    private int groundCover;
+    private static final int COVER_GRASS = 0, COVER_SNOW = 1, COVER_LEAVES = 2, COVER_WINTER = 3;
 
     // ---- high-score line -----------------------------------------------------------
     private static final int BESTLINE = 12;
@@ -252,13 +255,15 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
         // Ground cover: snow when it snows, fallen leaves when leaves fall.
         // (Purely visual - crashes are worked out from positions, not the ground.)
-        int weather = Holidays.WEATHER[holiday];
-        if (weather == 1) {
+        if (groundCover == COVER_SNOW) {
             GROUND_A = dark ? 0xFF5A6678 : 0xFFEAF1F8;
             GROUND_B = dark ? 0xFF525E70 : 0xFFDCE6F0;
-        } else if (weather == 2) {
+        } else if (groundCover == COVER_LEAVES) {
             GROUND_A = dark ? 0xFF3E2A16 : 0xFFB8782E;
             GROUND_B = dark ? 0xFF4A3219 : 0xFFA3682A;
+        } else if (groundCover == COVER_WINTER) {
+            GROUND_A = dark ? 0xFF3A3424 : 0xFF9C8A5C;
+            GROUND_B = dark ? 0xFF423B28 : 0xFF8E7C50;
         }
         int tint = dark ? Holidays.TINT_DARK[holiday] : Holidays.TINT_LIGHT[holiday];
         if (tint != 0) {
@@ -570,6 +575,21 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             holiday = h;
             themeDirty = true;
         }
+        pickGroundCover();
+    }
+
+    /** Christmas is snowy, Thanksgiving leafy; New Year's is a coin toss each run. */
+    private void pickGroundCover() {
+        int cover;
+        int w = Holidays.WEATHER[holiday];
+        if (holiday == Holidays.NEW_YEAR) cover = rnd.nextBoolean() ? COVER_SNOW : COVER_WINTER;
+        else if (w == 1) cover = COVER_SNOW;
+        else if (w == 2) cover = COVER_LEAVES;
+        else cover = COVER_GRASS;
+        if (cover != groundCover) {
+            groundCover = cover;
+            themeDirty = true;
+        }
     }
 
     private static int mixCol(int a, int b, float t) {
@@ -658,6 +678,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
         if (toggleTheme) {
             toggleTheme = false;
+            play(sFlower, 0.8f);
             dark = !dark;
             prefs.edit().putBoolean("dark", dark).apply();
             themeDirty = true;
@@ -671,6 +692,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 if (adRewardEarned && state == CRASH) resumeAfterCrash();
             } else if (pendingStartAfterAd) {
                 pendingStartAfterAd = false;
+                gamesSinceAd = 1;
                 resetRun();
                 state = RUN;
             }
@@ -745,8 +767,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             roll += (-steer * 5f - roll) * Math.min(1f, dt * 6f);
             if (tapped && menuTime > 0.3f) {
                 tapped = false;
-                resetRun();
-                state = RUN;
+                requestNewRun();
             }
             tapped = false;
             return;
@@ -757,8 +778,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             shake = Math.max(0f, shake - dt * 1.6f);
             flash = Math.max(0f, flash - dt * 2f);
             if (tapped && crashTimer > 0.9f) {
+                // back to the start screen rather than straight into a new run
                 tapped = false;
-                requestNewRun();
+                resetRun();
+                state = MENU;
+                menuTime = 0;
             }
             tapped = false;
             return;
@@ -1047,7 +1071,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     /** Start a fresh run, first showing an interstitial if one is due. */
     private void requestNewRun() {
-        gamesSinceAd++;
+        // gamesSinceAd = games played since the last ad. After 4, the next start shows one.
         if (gamesSinceAd >= GAMES_PER_AD && ads != null && ads.interstitialReady()) {
             gamesSinceAd = 0;
             waitingForAd = true;
@@ -1055,6 +1079,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             ads.showInterstitial();
             return;
         }
+        gamesSinceAd++;
         resetRun();
         state = RUN;
     }
@@ -1763,8 +1788,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         tri(c, 0.4f, -0.68f, 0.52f, -0.7f, 0.44f, -0.88f, fur);
     }
 
-    private boolean snowy() { return Holidays.WEATHER[holiday] == 1; }
-    private boolean leafy() { return Holidays.WEATHER[holiday] == 2; }
+    private boolean snowy() { return groundCover == COVER_SNOW; }
+    private boolean leafy() { return groundCover == COVER_LEAVES; }
+    private boolean wintry() { return groundCover == COVER_WINTER; }
+
+    private static final int[] DRY_GRASS = {0xFFB09A62, 0xFF9E8752, 0xFFC2AC70, 0xFF8C7646};
 
     /** A leaf lying flat on the ground (Thanksgiving). */
     private void drawFallenLeaf(Canvas c, Obj o) {
@@ -1795,7 +1823,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         if (snowy()) { drawSnowBump(c, o); return; }
         if (leafy()) { drawFallenLeaf(c, o); return; }
         float k = o.size;
-        int[] cols = {0xFF3D7D32, 0xFF467F2E, 0xFF35702C, 0xFF4C8A34};
+        int[] cols = wintry() ? DRY_GRASS : new int[]{0xFF3D7D32, 0xFF467F2E, 0xFF35702C, 0xFF4C8A34};
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeCap(Paint.Cap.ROUND);
         p.setStrokeWidth(0.04f * k);
@@ -1807,7 +1835,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void drawFlower(Canvas c, Obj o) {
-        if (snowy()) return;
+        if (snowy() || wintry()) return;
         if (leafy()) { drawFallenLeaf(c, o); return; }
         int[] cols = {0xFFFFE15A, 0xFFFFFFFF, 0xFFE86AA6, 0xFFB98CFF};
         p.setStyle(Paint.Style.STROKE);
@@ -2040,15 +2068,19 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 txt.setTextAlign(Paint.Align.CENTER);
                 txt.setColor(Color.argb((int) (255 * pulse * a), 255, 220, 120));
                 txt.setTextSize(H * 0.045f);
-                c.drawText(offer ? "or tap anywhere to start over" : "TAP TO RUN AGAIN",
+                c.drawText(offer ? "or tap anywhere for the start screen" : "TAP TO CONTINUE",
                         cx, offer ? H * 0.865f : H * 0.8f, txt);
             }
             txt.setColor(Color.WHITE);
         }
 
         if (state == MENU || (state == CRASH && crashTimer > 0.5f)) {
+            // drawn faint so they stay out of the way, but still work
+            float bx0 = soundBtnX() - themeBtnR() * 2f, bx1 = themeBtnX() + themeBtnR() * 2f;
+            int layer = c.saveLayerAlpha(bx0, 0f, bx1, themeBtnY() + themeBtnR() * 2.6f, 105);
             drawThemeButton(c);
             drawSoundButton(c);
+            c.restoreToCount(layer);
             pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF, "SCORES");
         }
         if (state == SCORES) drawScoreboard(c);
