@@ -7,6 +7,7 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.window.OnBackInvokedDispatcher;
 
 public class MainActivity extends Activity {
 
@@ -19,6 +20,17 @@ public class MainActivity extends Activity {
         gameView = new GameView(this);
         setContentView(gameView);
         hideSystemUi();
+
+        Ads ads = new Ads(this, gameView);
+        gameView.setAds(ads);
+        ads.start();
+
+        // Back button: leave the scoreboard / tutorial first, otherwise close the game.
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    () -> { if (!gameView.handleBack()) finish(); });
+        }
     }
 
     @Override
@@ -32,6 +44,12 @@ public class MainActivity extends Activity {
     protected void onPause() {
         gameView.pause();
         super.onPause();
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onBackPressed() {
+        if (!gameView.handleBack()) super.onBackPressed();
     }
 
     @Override

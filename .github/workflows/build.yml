@@ -21,24 +21,50 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build release APK
+      # APK for installing straight onto your phone (signed with the shared test key,
+      # so each build installs over the last one).
+      - name: Build test APK
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
           cp app/build/outputs/apk/release/app-release.apk HorizonRun.apk
 
+      # App bundle for the Play Store, signed with your private upload key.
+      # Runs only once the UPLOAD_KEYSTORE_BASE64 and UPLOAD_KEYSTORE_PASSWORD
+      # repository secrets exist.
+      - name: Build Play Store bundle
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+        run: |
+          if [ -z "$UPLOAD_KEYSTORE_BASE64" ]; then
+            echo "No upload key secrets yet - skipping the Play Store bundle."
+            exit 0
+          fi
+          echo "$UPLOAD_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          export UPLOAD_KEYSTORE_FILE="$RUNNER_TEMP/upload.jks"
+          ./gradlew bundleRelease --no-daemon --stacktrace
+          cp app/build/outputs/bundle/release/app-release.aab HorizonRun.aab
+          rm -f "$RUNNER_TEMP/upload.jks"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: HorizonRun-apk
-          path: HorizonRun.apk
+          name: HorizonRun
+          path: |
+            HorizonRun.apk
+            HorizonRun.aab
+          if-no-files-found: ignore
 
       - name: Publish to the "latest" release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          FILES="HorizonRun.apk"
+          [ -f HorizonRun.aab ] && FILES="$FILES HorizonRun.aab"
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest HorizonRun.apk \
+          gh release create latest $FILES \
             --target "${{ github.sha }}" \
             --title "Horizon Run — build ${{ github.run_number }}" \
-            --notes "Open this page on your Android phone and tap HorizonRun.apk to download and install." \
+            --notes "Open this page on your Android phone and tap HorizonRun.apk to download and install. HorizonRun.aab (when present) is the Play Store upload." \
             --latest

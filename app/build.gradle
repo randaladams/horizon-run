@@ -2,29 +2,40 @@ plugins {
     id 'com.android.application'
 }
 
-// Each GitHub build gets a higher version number so the new APK installs over the old one.
+// Each GitHub build gets a higher version number so the new version installs over the old one.
 def buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
+// Play Store upload key: provided by GitHub secrets (see .github/workflows/build.yml).
+// Without it, builds fall back to the shared test key in this repo, which is fine
+// for side-loading on your own phone but must never be used for the Play Store.
+def uploadStore = System.getenv("UPLOAD_KEYSTORE_FILE")
 
 android {
     namespace 'com.horizonrun.game'
-    compileSdk 35
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.horizonrun.game"
         minSdk 26
-        targetSdk 35
+        targetSdk 36
         versionCode buildNumber
-        versionName "1.0.${buildNumber}"
+        versionName "1.1.${buildNumber}"
     }
 
-    // A fixed key committed to the repo, so every build is signed the same way
-    // and updates install on top of the previous version.
     signingConfigs {
         shared {
             storeFile file('horizonrun.keystore')
             storePassword 'horizonrun'
             keyAlias 'horizonrun'
             keyPassword 'horizonrun'
+        }
+        if (uploadStore) {
+            upload {
+                storeFile file(uploadStore)
+                storePassword System.getenv("UPLOAD_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("UPLOAD_KEY_ALIAS") ?: "upload"
+                keyPassword System.getenv("UPLOAD_KEY_PASSWORD") ?: System.getenv("UPLOAD_KEYSTORE_PASSWORD")
+            }
         }
     }
 
@@ -34,7 +45,7 @@ android {
         }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.shared
+            signingConfig uploadStore ? signingConfigs.upload : signingConfigs.shared
         }
     }
 
@@ -42,4 +53,9 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation 'com.google.android.gms:play-services-ads:23.6.0'
+    implementation 'com.google.android.ump:user-messaging-platform:3.1.0'
 }
