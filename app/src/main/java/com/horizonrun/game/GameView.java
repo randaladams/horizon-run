@@ -213,6 +213,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private final ArrayList<long[]> history = new ArrayList<>();   // {time, score, flowers, secs, newBest, continued}
     private boolean runLogged;           // this run already has a row (updated after a continue)
     private volatile boolean scoresReq, backReq, privacyReq;
+    // back button: pause the run first, end it on a second press; exit needs two presses too
+    private volatile boolean paused, backInRun;
+    private volatile long exitPromptAt;
+    private static final long EXIT_WINDOW_MS = 3000;
 
     // ---- holiday themes -----------------------------------------------------------
     private int holiday = Holidays.NONE;    // theme in use
@@ -345,6 +349,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     public void pause() {
         resumed = false;
+        if (state == RUN) paused = true;
         if (sensorManager != null) sensorManager.unregisterListener(this);
         touching = false;
         stopLoop();
@@ -433,6 +438,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     }
                 }
                 if (waitingForAd) return true;
+                if (exitPromptShowing() && (state == MENU || state == CRASH)) {
+                    exitPromptAt = 0;      // tap dismisses "press back again to exit"
+                    return true;
+                }
                 if (state == SCORES) {
                     if (inScoresTitle(e)) titleDownAt = e.getEventTime();
                     if (inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) backReq = true;
@@ -503,6 +512,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private void pointerDown(MotionEvent e) {
         tapped = true;
+        exitPromptAt = 0;
         int idx = e.getActionIndex();
         if ((state == RUN || state == TUTORIAL) && e.getX(idx) < W * 0.5f) jumpReq = true;
     }
@@ -799,6 +809,19 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
 
         // ---- RUN ----
+        if (backInRun) {
+            backInRun = false;
+            if (paused) { quitRun(); return; }
+            paused = true;
+        }
+        if (paused) {
+            if (tapped) {               // tap to keep running
+                paused = false;
+                jumpReq = false;
+            }
+            tapped = false;
+            return;
+        }
         tapped = false;
         elapsed += dt;
         if (invuln > 0f) invuln -= dt;
@@ -918,7 +941,35 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             backReq = true;
             return true;
         }
-        return false;
+        if (state == RUN) {
+            backInRun = true;          // 1st press pauses, 2nd ends the run (handled in update)
+            return true;
+        }
+        // start screen or crash screen: first press asks, second press (within 3 s) exits
+        long now = android.os.SystemClock.uptimeMillis();
+        if (exitPromptAt > 0 && now - exitPromptAt < EXIT_WINDOW_MS) return false;
+        exitPromptAt = now;
+        return true;
+    }
+
+    private boolean exitPromptShowing() {
+        return exitPromptAt > 0
+                && android.os.SystemClock.uptimeMillis() - exitPromptAt < EXIT_WINDOW_MS;
+    }
+
+    /** Ends the current run on purpose (back button): saves it like a crash, no crash effects. */
+    private void quitRun() {
+        int score = score();
+        newHigh = score > bestAtStart && bestAtStart > 0;
+        if (score > best) {
+            best = score;
+            prefs.edit().putInt("best", best).apply();
+        }
+        logRun();
+        paused = false;
+        resetRun();
+        state = MENU;
+        menuTime = 0;
     }
 
     // ---- chime --------------------------------------------------------------------
@@ -2117,6 +2168,44 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
 
         drawPickupFx(c);
+
+        if (state == RUN && paused) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0x99000000);
+            c.drawRect(0, 0, W, H, p);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setColor(Color.WHITE);
+            txt.setTextSize(H * 0.12f);
+            c.drawText("PAUSED", cx, H * 0.4f, txt);
+            txt.setTextSize(H * 0.05f);
+            float pulse = 0.6f + 0.4f * (float) Math.sin(animTime * 4f);
+            txt.setColor(Color.argb((int) (255 * pulse), 255, 220, 120));
+            c.drawText("TAP TO KEEP RUNNING", cx, H * 0.56f, txt);
+            txt.setColor(0xCCFFFFFF);
+            txt.setTextSize(H * 0.04f);
+            c.drawText("Press BACK again to end this run", cx, H * 0.66f, txt);
+            txt.setColor(Color.WHITE);
+        }
+        if ((state == MENU || state == CRASH) && exitPromptShowing()) {
+            float bw = W * 0.5f, bh = H * 0.24f;
+            rect.set(cx - bw / 2, H * 0.38f, cx + bw / 2, H * 0.38f + bh);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xEE101828);
+            c.drawRoundRect(rect, H * 0.03f, H * 0.03f, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(2f, H * 0.004f));
+            p.setColor(0x99FFFFFF);
+            c.drawRoundRect(rect, H * 0.03f, H * 0.03f, p);
+            p.setStyle(Paint.Style.FILL);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setColor(Color.WHITE);
+            txt.setTextSize(H * 0.055f);
+            c.drawText("Leave Horizon Run?", cx, rect.top + bh * 0.42f, txt);
+            txt.setTextSize(H * 0.035f);
+            txt.setColor(0xCCFFFFFF);
+            c.drawText("Press BACK again to exit  \u2022  tap to stay", cx, rect.top + bh * 0.75f, txt);
+            txt.setColor(Color.WHITE);
+        }
 
         // gold flash when the old high score is beaten mid-run
         if (goldFlash > 0f) {
