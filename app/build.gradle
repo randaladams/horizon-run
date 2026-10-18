@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Each GitHub build gets a higher version number so the new APK installs over the old one.
+def buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
+android {
+    namespace 'com.horizonrun.game'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.horizonrun.game"
+        minSdk 26
+        targetSdk 35
+        versionCode buildNumber
+        versionName "1.0.${buildNumber}"
+    }
+
+    // A fixed key committed to the repo, so every build is signed the same way
+    // and updates install on top of the previous version.
+    signingConfigs {
+        shared {
+            storeFile file('horizonrun.keystore')
+            storePassword 'horizonrun'
+            keyAlias 'horizonrun'
+            keyPassword 'horizonrun'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.shared
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.shared
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
