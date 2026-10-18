@@ -1161,6 +1161,64 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private boolean exitPromptShowing() { return exitDialog; }
 
+    // ---- crash one-liners ------------------------------------------------------------
+    private int hitType = -1;
+    private boolean hitWall;
+    private String quip = "";
+    private static final String[] Q_PINE = {
+            "Watch out for that tree!", "That tree came out of nowhere.", "Pine-ful.",
+            "In your defense, it was standing very still.", "Trees: 1, You: 0."};
+    private static final String[] Q_OAK = {
+            "Oak-ward...", "That oak was here first.", "You really hugged that tree.",
+            "Leaf me alone!", "Bark worse than its bite? Nope."};
+    private static final String[] Q_ROCK = {
+            "Watch out for that rock!", "You rock. Literally.", "That rock didn't move. At all.",
+            "Should've jumped.", "Rock solid. Unlike your steering."};
+    private static final String[] Q_WALL = {
+            "That wall was NOT on the map.", "Jump. The answer was jump.",
+            "Hit a wall. Literally.", "The wall wins this round."};
+    private static final String[] Q_DEER = {
+            "Watch out for that deer!", "That deer came out of nowhere.", "Oh deer.",
+            "Deer in the headlights... and that was you.", "It had the right of way."};
+    private static final String[] Q_BEAR = {
+            "Watch out for that bear!", "That bear came out of nowhere.", "Un-bear-able.",
+            "The bear would like a word.", "Should've high-jumped. Bear-ly missed!"};
+    private static final String[] Q_FOX = {
+            "Watch out for that fox!", "Outfoxed.", "What does the fox say? 'Ouch.'",
+            "Sly little thing.", "That fox was quick. You weren't."};
+    private static final String[] Q_BRANCH = {
+            "Watch out for that branch!", "Duck! ...Oh. You can't.",
+            "That branch was at head height. Your head's height.",
+            "Branching out didn't work.", "Clotheslined by nature."};
+    private static final String[] Q_ANY = {
+            "Well, that happened.", "Nature: undefeated.", "Insurance won't cover this."};
+
+    private String pickQuip() {
+        String[] set;
+        if (hitWall) set = Q_WALL;
+        else switch (hitType) {
+            case PINE: set = Q_PINE; break;
+            case OAK: set = Q_OAK; break;
+            case ROCK: set = Q_ROCK; break;
+            case DEER: set = Q_DEER; break;
+            case BEAR: set = Q_BEAR; break;
+            case FOX: set = Q_FOX; break;
+            case BRANCH: set = Q_BRANCH; break;
+            default: set = Q_ANY; break;
+        }
+        if (rnd.nextFloat() < 0.15f) set = Q_ANY;        // now and then, a general one
+        return set[rnd.nextInt(set.length)];
+    }
+
+    private void drawQuip(Canvas c, float y, float alpha) {
+        if (quip.isEmpty()) return;
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.036f);
+        txt.setColor(Color.argb((int) (220 * alpha), 255, 236, 180));
+        c.drawText(quip, cx, y, txt);
+        txt.setColor(Color.argb((int) (255 * alpha), 255, 255, 255));
+    }
+
     private void closeApp() {
         exitDialog = false;
         final android.content.Context ctx = getContext();
@@ -1430,6 +1488,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 } else if (gapToPlayer < 0f && (invuln > 0f || zenRun)) {
                     // shielded after continuing, or zen mode: run straight through
                 } else if (gapToPlayer < 0f) {
+                    hitType = o.type;
+                    hitWall = o.wallPiece;
                     crash();
                     return;
                 } else if (gapToPlayer < 0.7f) {
@@ -1497,6 +1557,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private void crash() {
         if (zenRun) return;
+        quip = pickQuip();
         play(sCrash, 0.8f);
         statsPending = true;
         state = CRASH;
@@ -2402,7 +2463,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setColor(Color.argb((int) (255 * a), 255, 255, 255));
             if (newHigh) {
                 txt.setTextSize(H * 0.07f);
-                c.drawText("WIPEOUT", cx, H * 0.27f, txt);
+                c.drawText("WIPEOUT", cx, H * 0.24f, txt);
+                drawQuip(c, H * 0.305f, a);
+                txt.setTextSize(H * 0.07f);
                 float pulse = 1f + 0.06f * (float) Math.sin(crashTimer * 6f);
                 txt.setColor(Color.argb((int) (255 * a), 255, 212, 70));
                 txt.setTextSize(H * 0.12f * pulse);
@@ -2414,7 +2477,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 c.drawText("Previous best: " + bestAtStart + " m   \u2022   " + Holidays.ITEMS[holiday] + ": " + flowersRun, cx, H * 0.64f, txt);
             } else {
                 txt.setTextSize(H * 0.12f);
-                c.drawText("WIPEOUT", cx, H * 0.4f, txt);
+                c.drawText("WIPEOUT", cx, H * 0.36f, txt);
+                drawQuip(c, H * 0.43f, a);
                 txt.setTextSize(H * 0.06f);
                 c.drawText(score() + " m", cx, H * 0.53f, txt);
                 txt.setTextSize(H * 0.04f);
