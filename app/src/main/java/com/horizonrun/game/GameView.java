@@ -207,6 +207,16 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private boolean runLogged;           // this run already has a row (updated after a continue)
     private volatile boolean scoresReq, backReq, privacyReq;
 
+    // ---- holiday themes -----------------------------------------------------------
+    private int holiday = Holidays.NONE;    // theme in use
+    private int holidayAuto = Holidays.NONE; // what today's date says
+    private int holidayPreview = -1;         // -1 = follow the date (preview switch on the scoreboard)
+    private volatile boolean cycleHoliday;
+    private volatile long titleDownAt;
+    private final float[] wx = new float[70], wy = new float[70], wsp = new float[70], wsz = new float[70];
+    private final int[] wcol = new int[70];
+    private int weatherFor = -1;
+
     // ---- high-score line -----------------------------------------------------------
     private static final int BESTLINE = 12;
     private final Obj bestLine = new Obj();
@@ -235,6 +245,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             glowCol = 0xFFFFFFFF;
             bgCol = 0xFF0E2457;
         }
+        int tint = dark ? Holidays.TINT_DARK[holiday] : Holidays.TINT_LIGHT[holiday];
+        if (tint != 0) {
+            HAZE = mixCol(HAZE, tint, dark ? 0.45f : 0.35f);
+            skyCols = new int[]{mixCol(skyCols[0], tint, 0.15f), mixCol(skyCols[1], tint, 0.3f),
+                    mixCol(skyCols[2], tint, 0.45f), HAZE};
+        }
         if (H > 1) {
             sky.setShader(new LinearGradient(0, 0, 0, horizonY(0f) + H * 0.05f,
                     skyCols, new float[]{0f, 0.45f, 0.85f, 1f}, Shader.TileMode.CLAMP));
@@ -261,6 +277,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         applyTheme();
 
         bestLine.type = BESTLINE;
+        refreshHoliday();
         loadHistory();
         buildChime();
 
@@ -395,6 +412,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 }
                 if (waitingForAd) return true;
                 if (state == SCORES) {
+                    if (inScoresTitle(e)) titleDownAt = e.getEventTime();
                     if (inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) backReq = true;
                     else if (inRect(e, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB())) resetTap = true;
                     else if (ads != null && ads.privacyOptionsRequired()
@@ -427,6 +445,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             case MotionEvent.ACTION_POINTER_DOWN:
                 pointerDown(e);
                 break;
+            case MotionEvent.ACTION_UP:
+                // hidden theme preview: hold the scoreboard title for a moment
+                if (state == SCORES && titleDownAt > 0 && inScoresTitle(e)
+                        && e.getEventTime() - titleDownAt > 600) cycleHoliday = true;
+                titleDownAt = 0;
+                break;
             default:
                 break;
         }
@@ -443,6 +467,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
         touching = right;
         return true;
+    }
+
+    private boolean inScoresTitle(MotionEvent e) {
+        float pw = Math.min(W * 0.8f, H * 1.9f);
+        return e.getX() > cx - pw / 2 && e.getX() < cx + pw / 2 && e.getY() < H * 0.17f;
     }
 
     private void pointerDown(MotionEvent e) {
@@ -508,7 +537,28 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     // Game logic
     // ================================================================================
 
+    /** Works out today's theme (or the preview) and refreshes colours if it changed. */
+    private void refreshHoliday() {
+        try {
+            holidayAuto = Holidays.forDate(java.time.LocalDate.now());
+        } catch (Exception e) {
+            holidayAuto = Holidays.NONE;
+        }
+        int h = holidayPreview >= 0 ? holidayPreview : holidayAuto;
+        if (h != holiday) {
+            holiday = h;
+            themeDirty = true;
+        }
+    }
+
+    private static int mixCol(int a, int b, float t) {
+        return Color.rgb((int) (Color.red(a) + (Color.red(b) - Color.red(a)) * t),
+                (int) (Color.green(a) + (Color.green(b) - Color.green(a)) * t),
+                (int) (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t));
+    }
+
     private void resetRun() {
+        refreshHoliday();
         objs.clear();
         px = 0;
         distance = 0;
@@ -628,6 +678,15 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 tutSkip = true;
             }
         }
+        if (cycleHoliday) {
+            cycleHoliday = false;
+            // auto -> each holiday -> plain flowers -> back to auto
+            if (holidayPreview == -1) holidayPreview = 1;
+            else if (holidayPreview == Holidays.NONE) holidayPreview = -1;
+            else holidayPreview = (holidayPreview + 1) % Holidays.COUNT;
+            refreshHoliday();
+        }
+        updateWeather(dt);
         if (privacyReq) {
             privacyReq = false;
             if (ads != null) ads.showPrivacyOptions();
@@ -1222,6 +1281,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         drawScene(c);
         c.restore();
 
+        drawWeather(c);
         if (state == RUN && boost > 1f) drawSpeedLines(c);
         if (flash > 0f) {
             p.setStyle(Paint.Style.FILL);
@@ -1784,10 +1844,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setTextSize(H * 0.13f);
             c.drawText("HORIZON RUN", cx, H * 0.36f, txt);
+            if (holiday != Holidays.NONE) {
+                float bob = (float) Math.sin(menuTime * 2.5f) * H * 0.008f;
+                txt.setTextSize(H * 0.065f);
+                txt.setColor(Holidays.COLOR[holiday]);
+                c.drawText(Holidays.BANNER[holiday], cx, H * 0.2f + bob, txt);
+                txt.setColor(Color.WHITE);
+            }
             txt.setTextSize(H * 0.045f);
             c.drawText("Tilt your phone left and right to steer", cx, H * 0.52f, txt);
             c.drawText("Hold the RIGHT side to sprint  \u2022  tap the LEFT side to jump", cx, H * 0.6f, txt);
-            c.drawText("Dodge obstacles  \u2022  glowing snails slow you down  \u2022  flowers score points", cx, H * 0.68f, txt);
+            c.drawText("Dodge obstacles  \u2022  glowing snails slow you down  \u2022  "
+                    + Holidays.ITEMS[holiday].toLowerCase(Locale.US) + " score points", cx, H * 0.68f, txt);
             txt.setTextSize(H * 0.032f);
             txt.setColor(0xCCFFFFFF);
             c.drawText("Sun / moon: light or dark mode  \u2022  Scores: your last 10 runs", cx, H * 0.745f, txt);
@@ -1827,14 +1895,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 txt.setTextSize(H * 0.075f);
                 c.drawText(score() + " m", cx, H * 0.56f, txt);
                 txt.setTextSize(H * 0.038f);
-                c.drawText("Previous best: " + bestAtStart + " m   \u2022   Flowers: " + flowersRun, cx, H * 0.64f, txt);
+                c.drawText("Previous best: " + bestAtStart + " m   \u2022   " + Holidays.ITEMS[holiday] + ": " + flowersRun, cx, H * 0.64f, txt);
             } else {
                 txt.setTextSize(H * 0.12f);
                 c.drawText("WIPEOUT", cx, H * 0.4f, txt);
                 txt.setTextSize(H * 0.06f);
                 c.drawText(score() + " m", cx, H * 0.53f, txt);
                 txt.setTextSize(H * 0.04f);
-                c.drawText("Best: " + best + " m   \u2022   Flowers: " + flowersRun, cx, H * 0.61f, txt);
+                c.drawText("Best: " + best + " m   \u2022   " + Holidays.ITEMS[holiday] + ": " + flowersRun, cx, H * 0.61f, txt);
             }
             boolean offer = canOfferContinue();
             if (offer) drawContinueButton(c);
@@ -2498,6 +2566,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         txt.setColor(0x99FFFFFF);
         c.drawText("\u2605 new high score     \u25B6 continued after an ad     gold = your best",
                 cx, bottom - H * 0.025f, txt);
+        if (holidayPreview >= 0) {
+            txt.setColor(0xFFFFD45A);
+            c.drawText("Theme preview: " + Holidays.NAME[holiday] + "  (hold the title to change)",
+                    cx, top + H * 0.125f, txt);
+        }
         txt.setColor(Color.WHITE);
 
         boolean confirm = resetConfirm > 0f;
@@ -2744,7 +2817,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         pinkFlash = 1f;
         if (o.type == GOLD_BLOOM) {
             bonus += GOLD_PTS;
-            popText = "GOLDEN FLOWER  +" + GOLD_PTS;
+            popText = Holidays.GOLD[holiday] + "  +" + GOLD_PTS;
             popColor = 0xFFFFD45A;
             popTimer = 1.3f;
             goldFlash = Math.max(goldFlash, 0.6f);
@@ -2759,7 +2832,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             trailGot++;
             if (trailGot == TRAIL_LEN && trailMissed == 0) {
                 bonus += BOUQUET_PTS;
-                popText = "BOUQUET!  +" + (FLOWER_PTS + BOUQUET_PTS);
+                popText = Holidays.TRAIL[holiday] + "  +" + (FLOWER_PTS + BOUQUET_PTS);
                 popColor = 0xFFFFD45A;
                 popTimer = 1.4f;
                 buzz(60);
@@ -2780,6 +2853,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     /** A big glowing flower on a stem; gold ones sparkle. */
     private void drawBloom(Canvas c, Obj o) {
+        if (holiday != Holidays.NONE) {
+            drawHolidayItem(c, o);
+            return;
+        }
         boolean gold = o.type == GOLD_BLOOM;
         float k = o.size;
         float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 5f + o.z * 0.3f);
@@ -2837,6 +2914,461 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 c.drawLine(sx, sy - sz, sx, sy + sz, p);
             }
             p.setStyle(Paint.Style.FILL);
+        }
+    }
+
+    // ================================================================================
+    // Holiday collectibles (drawn in metres, ground at y = 0, up is negative y)
+    // ================================================================================
+
+    private static final int[][] HOL_COLS = {
+            {0xFFFF6FAE, 0xFFB47CFF, 0xFFFF9A3C, 0xFF5FC8FF},   // (normal, unused here)
+            {0xFF9B5CFF, 0xFFFF5FA2, 0xFF3FC1FF, 0xFFFFC23A},   // new year poppers
+            {0xFFE8234A, 0xFFFF6FA0, 0xFFFF3D7F, 0xFFD81B60},   // hearts
+            {0xFF2EAA3C, 0xFF46C350, 0xFF1F8F30, 0xFF5BD45E},   // shamrocks
+            {0xFFFFA8C8, 0xFFA8D8FF, 0xFFC8F0A0, 0xFFE0C0FF},   // eggs
+            {0xFFE53935, 0xFFF5F5F5, 0xFF1E5BD8, 0xFFE53935},   // stars
+            {0xFFFF8A1E, 0xFFF57C00, 0xFFFF9A2E, 0xFFFB8C00},   // pumpkins
+            {0xFFE8661E, 0xFFC62828, 0xFFE0A21E, 0xFF9E5A1E},   // leaves
+            {0xFFD32F2F, 0xFF2E7D32, 0xFF1E5BD8, 0xFF8E3FC8}};  // presents
+
+    private void drawHolidayItem(Canvas c, Obj o) {
+        boolean gold = o.type == GOLD_BLOOM;
+        float k = o.size;
+        float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 5f + o.z * 0.3f);
+        float bob = (float) Math.sin(animTime * 3f + o.x) * 0.07f;
+        float y = -1.0f * k + bob;
+        int main = gold ? 0xFFFFCF3A : HOL_COLS[holiday][o.color % 4];
+        if (gold && holiday == Holidays.HALLOWEEN) main = 0xFF9CFF7A;   // eerie green glow
+
+        // halo so it reads as a pickup, not an obstacle
+        p.setStyle(Paint.Style.FILL);
+        p.setColor((main & 0x00FFFFFF) | ((int) ((gold ? 95 : 60) + 50 * pulse) << 24));
+        c.drawCircle(0f, y, (gold ? 0.9f : 0.62f) * k + 0.08f * pulse, p);
+
+        c.save();
+        c.translate(0f, y);
+        c.scale(k, k);
+        switch (holiday) {
+            case Holidays.NEW_YEAR:     if (gold) drawChampagne(c); else drawPopper(c, main); break;
+            case Holidays.VALENTINE:    drawHeart(c, gold ? 0xFFFFC83A : main, gold); break;
+            case Holidays.ST_PATRICK:   if (gold) drawPotOfGold(c); else drawShamrock(c, main); break;
+            case Holidays.EASTER:       drawEgg(c, gold ? 0xFFFFCF3A : main, o.color, gold); break;
+            case Holidays.JULY_4:       if (gold) drawFirework(c); else drawStar(c, main); break;
+            case Holidays.HALLOWEEN:    if (gold) drawSkull(c); else drawPumpkin(c, main, pulse); break;
+            case Holidays.THANKSGIVING: if (gold) drawTurkey(c); else drawLeaf(c, main, o.x); break;
+            case Holidays.CHRISTMAS:    if (gold) drawXmasTree(c); else drawPresent(c, main); break;
+            default: break;
+        }
+        c.restore();
+
+        if (gold) {
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(0.04f);
+            for (int i = 0; i < 4; i++) {
+                float ph = (animTime * 1.5f + i * 0.25f) % 1f;
+                float ang = (float) (i * Math.PI / 2 + animTime);
+                float r = 0.75f + 0.35f * ph;
+                float sx = (float) Math.cos(ang) * r, sy = y + (float) Math.sin(ang) * r;
+                float sz = 0.12f * (1f - Math.abs(ph - 0.5f) * 2f);
+                p.setColor(Color.argb((int) (255 * (1f - ph)), 255, 250, 210));
+                c.drawLine(sx - sz, sy, sx + sz, sy, p);
+                c.drawLine(sx, sy - sz, sx, sy + sz, p);
+            }
+            p.setStyle(Paint.Style.FILL);
+        }
+    }
+
+    private void fill(int col) {
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(fog(col));
+    }
+
+    private void stroke(int col, float w) {
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeJoin(Paint.Join.ROUND);
+        p.setStrokeWidth(w);
+        p.setColor(fog(col));
+    }
+
+    private void starPath(float x, float y, float r, int points, float inner, float rot) {
+        path.reset();
+        for (int i = 0; i < points * 2; i++) {
+            double a = rot + Math.PI * i / points - Math.PI / 2;
+            float rr = (i % 2 == 0) ? r : r * inner;
+            float qx = x + (float) Math.cos(a) * rr, qy = y + (float) Math.sin(a) * rr;
+            if (i == 0) path.moveTo(qx, qy); else path.lineTo(qx, qy);
+        }
+        path.close();
+    }
+
+    private void heartPath(float x, float y, float s) {
+        path.reset();
+        path.moveTo(x, y + s * 0.9f);
+        path.cubicTo(x - s * 1.35f, y + s * 0.05f, x - s * 0.65f, y - s * 0.95f, x, y - s * 0.32f);
+        path.cubicTo(x + s * 0.65f, y - s * 0.95f, x + s * 1.35f, y + s * 0.05f, x, y + s * 0.9f);
+        path.close();
+    }
+
+    // ---- New Year's ----
+    private void drawPopper(Canvas c, int col) {
+        path.reset();                       // cone, open end up
+        path.moveTo(-0.07f, 0.4f);
+        path.lineTo(0.07f, 0.4f);
+        path.lineTo(0.27f, -0.18f);
+        path.lineTo(-0.27f, -0.18f);
+        path.close();
+        fill(col);
+        c.drawPath(path, p);
+        stroke(0xFFFFD45A, 0.05f);
+        c.drawLine(-0.16f, 0.1f, 0.16f, 0.1f, p);
+        c.drawLine(-0.21f, -0.05f, 0.21f, -0.05f, p);
+        int[] cc = {0xFFFFD45A, 0xFFFF5FA2, 0xFF3FC1FF, 0xFF8CFF6A, 0xFFFFFFFF};
+        p.setStyle(Paint.Style.FILL);
+        for (int i = 0; i < 9; i++) {       // confetti bursting out
+            float ph = (animTime * 0.9f + i * 0.11f) % 1f;
+            float ang = (float) (-Math.PI / 2 + (i - 4) * 0.28f);
+            float r = 0.15f + 0.45f * ph;
+            float x = (float) Math.cos(ang) * r, y = -0.2f + (float) Math.sin(ang) * r;
+            p.setColor(fog(cc[i % cc.length]));
+            p.setAlpha((int) (255 * (1f - ph * 0.7f)));
+            c.save();
+            c.rotate(ph * 360f + i * 40f, x, y);
+            c.drawRect(x - 0.045f, y - 0.025f, x + 0.045f, y + 0.025f, p);
+            c.restore();
+        }
+        p.setAlpha(255);
+    }
+
+    private void drawChampagne(Canvas c) {
+        fill(0xFF1F5A34);
+        rect.set(-0.17f, -0.12f, 0.17f, 0.45f);
+        c.drawRoundRect(rect, 0.08f, 0.08f, p);
+        path.reset();                        // shoulders and neck
+        path.moveTo(-0.17f, -0.05f);
+        path.quadTo(-0.16f, -0.25f, -0.06f, -0.3f);
+        path.lineTo(-0.06f, -0.5f);
+        path.lineTo(0.06f, -0.5f);
+        path.lineTo(0.06f, -0.3f);
+        path.quadTo(0.16f, -0.25f, 0.17f, -0.05f);
+        path.close();
+        c.drawPath(path, p);
+        fill(0xFFFFCF3A);                    // foil and label
+        c.drawRect(-0.07f, -0.58f, 0.07f, -0.38f, p);
+        c.drawRect(-0.17f, 0.05f, 0.17f, 0.25f, p);
+        fill(0xFFFFF4C0);
+        c.drawRect(-0.1f, 0.1f, 0.1f, 0.2f, p);
+        p.setColor(fog(0xFFFFFFFF));         // bubbles
+        for (int i = 0; i < 5; i++) {
+            float ph = (animTime * 0.8f + i * 0.2f) % 1f;
+            p.setAlpha((int) (220 * (1f - ph)));
+            c.drawCircle((float) Math.sin(i * 2.1f + animTime) * 0.12f, -0.6f - ph * 0.5f, 0.035f + 0.02f * ph, p);
+        }
+        p.setAlpha(255);
+    }
+
+    // ---- Valentine's ----
+    private void drawHeart(Canvas c, int col, boolean gold) {
+        float beat = 1f + 0.07f * (float) Math.max(0, Math.sin(animTime * 6f));
+        c.save();
+        c.scale(beat, beat);
+        heartPath(0f, 0f, 0.38f);
+        fill(col);
+        c.drawPath(path, p);
+        fill(0x66FFFFFF);
+        c.drawCircle(-0.15f, -0.13f, 0.07f, p);
+        if (gold) {                          // ribbon bow
+            stroke(0xFFE8234A, 0.06f);
+            c.drawLine(-0.36f, 0.05f, 0.36f, 0.05f, p);
+            fill(0xFFE8234A);
+            rect.set(-0.2f, -0.06f, -0.02f, 0.16f);
+            c.drawOval(rect, p);
+            rect.set(0.02f, -0.06f, 0.2f, 0.16f);
+            c.drawOval(rect, p);
+        }
+        c.restore();
+    }
+
+    // ---- St. Patrick's ----
+    private void drawShamrock(Canvas c, int col) {
+        stroke(0xFF1F7A2A, 0.06f);
+        path.reset();
+        path.moveTo(0f, 0.05f);
+        path.quadTo(0.05f, 0.3f, 0.2f, 0.45f);
+        c.drawPath(path, p);
+        for (int i = 0; i < 3; i++) {
+            double a = -Math.PI / 2 + i * 2 * Math.PI / 3;
+            float lx = (float) Math.cos(a) * 0.17f, ly = (float) Math.sin(a) * 0.17f;
+            heartPath(lx, ly, 0.18f);
+            fill(col);
+            c.save();
+            c.rotate((float) Math.toDegrees(a) + 90f, lx, ly);
+            c.drawPath(path, p);
+            c.restore();
+        }
+        fill(0x44FFFFFF);
+        c.drawCircle(0f, 0f, 0.05f, p);
+    }
+
+    private void drawPotOfGold(Canvas c) {
+        fill(0xFFFFCF3A);                    // heaped coins
+        for (int i = 0; i < 6; i++) c.drawCircle(-0.25f + i * 0.1f, -0.12f - (i % 2) * 0.05f, 0.09f, p);
+        c.drawCircle(0f, -0.25f, 0.1f, p);
+        fill(0xFF1E1E22);                    // pot
+        rect.set(-0.38f, -0.15f, 0.38f, 0.45f);
+        c.drawArc(rect, 0f, 180f, true, p);
+        c.drawRect(-0.38f, -0.05f, 0.38f, 0.17f, p);
+        rect.set(-0.42f, -0.12f, 0.42f, 0.0f);
+        fill(0xFF33333A);
+        c.drawRoundRect(rect, 0.05f, 0.05f, p);
+        fill(0xFFFFF0A0);
+        c.drawCircle(-0.12f, -0.17f, 0.03f, p);
+    }
+
+    // ---- Easter ----
+    private void drawEgg(Canvas c, int col, int variant, boolean gold) {
+        rect.set(-0.28f, -0.42f, 0.28f, 0.36f);
+        fill(col);
+        c.drawOval(rect, p);
+        int band = gold ? 0xFFFFF4B0 : HOL_COLS[Holidays.EASTER][(variant + 1) % 4];
+        stroke(band == col ? 0xFFFFFFFF : band, 0.05f);
+        path.reset();
+        for (int i = 0; i <= 8; i++) {
+            float x = -0.26f + i * 0.065f, y = (i % 2 == 0) ? -0.05f : 0.05f;
+            if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+        }
+        c.drawPath(path, p);
+        fill(0xFFFFFFFF);
+        for (int i = 0; i < 3; i++) c.drawCircle(-0.12f + i * 0.12f, -0.22f, 0.035f, p);
+        for (int i = 0; i < 2; i++) c.drawCircle(-0.06f + i * 0.12f, 0.18f, 0.035f, p);
+        fill(0x55FFFFFF);
+        rect.set(-0.18f, -0.34f, -0.06f, -0.16f);
+        c.drawOval(rect, p);
+    }
+
+    // ---- Independence Day ----
+    private void drawStar(Canvas c, int col) {
+        c.save();
+        c.rotate((float) Math.sin(animTime * 2f) * 12f);
+        starPath(0f, 0f, 0.4f, 5, 0.45f, 0f);
+        fill(col);
+        c.drawPath(path, p);
+        stroke(col == 0xFFF5F5F5 ? 0xFF1E5BD8 : 0xFFFFFFFF, 0.035f);
+        c.drawPath(path, p);
+        c.restore();
+    }
+
+    private void drawFirework(Canvas c) {
+        int[] cols = {0xFFFF4040, 0xFFFFFFFF, 0xFF4A8CFF, 0xFFFFD45A};
+        float ph = (animTime * 0.8f) % 1f;
+        float r = 0.15f + 0.45f * ph;
+        for (int i = 0; i < 14; i++) {
+            double a = i * Math.PI * 2 / 14;
+            float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+            stroke(cols[i % cols.length], 0.05f);
+            p.setAlpha((int) (255 * (1f - ph * 0.6f)));
+            c.drawLine(ca * r * 0.4f, sa * r * 0.4f, ca * r, sa * r, p);
+            p.setStyle(Paint.Style.FILL);
+            c.drawCircle(ca * r, sa * r, 0.045f, p);
+        }
+        p.setAlpha(255);
+        fill(0xFFFFFFFF);
+        c.drawCircle(0f, 0f, 0.08f, p);
+    }
+
+    // ---- Halloween ----
+    private void drawPumpkin(Canvas c, int col, float pulse) {
+        stroke(0xFF4E6B1E, 0.07f);           // stem
+        c.drawLine(0f, -0.28f, 0.05f, -0.42f, p);
+        fill(darker(col, 0.8f));
+        rect.set(-0.42f, -0.3f, -0.02f, 0.3f);
+        c.drawOval(rect, p);
+        rect.set(0.02f, -0.3f, 0.42f, 0.3f);
+        c.drawOval(rect, p);
+        fill(col);
+        rect.set(-0.25f, -0.32f, 0.25f, 0.32f);
+        c.drawOval(rect, p);
+        // glowing carved face, flickering like a candle
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(Color.rgb(255, 200 + (int) (40 * pulse), 70));
+        path.reset();
+        path.moveTo(-0.2f, -0.02f); path.lineTo(-0.12f, -0.17f); path.lineTo(-0.04f, -0.02f); path.close();
+        path.moveTo(0.04f, -0.02f); path.lineTo(0.12f, -0.17f); path.lineTo(0.2f, -0.02f); path.close();
+        path.moveTo(-0.03f, 0.04f); path.lineTo(0.03f, 0.04f); path.lineTo(0f, -0.03f); path.close();
+        c.drawPath(path, p);
+        path.reset();
+        path.moveTo(-0.24f, 0.09f);
+        path.lineTo(-0.15f, 0.13f); path.lineTo(-0.1f, 0.08f); path.lineTo(-0.04f, 0.14f);
+        path.lineTo(0.02f, 0.08f); path.lineTo(0.08f, 0.14f); path.lineTo(0.14f, 0.08f);
+        path.lineTo(0.24f, 0.09f);
+        path.quadTo(0f, 0.3f, -0.24f, 0.09f);
+        path.close();
+        c.drawPath(path, p);
+    }
+
+    private void drawSkull(Canvas c) {
+        fill(0xFFF2EEDC);
+        c.drawCircle(0f, -0.08f, 0.36f, p);
+        rect.set(-0.2f, 0.1f, 0.2f, 0.38f);
+        c.drawRoundRect(rect, 0.07f, 0.07f, p);
+        fill(0xFF141414);
+        c.drawCircle(-0.13f, -0.06f, 0.1f, p);
+        c.drawCircle(0.13f, -0.06f, 0.1f, p);
+        path.reset();
+        path.moveTo(-0.04f, 0.12f); path.lineTo(0.04f, 0.12f); path.lineTo(0f, 0.04f); path.close();
+        c.drawPath(path, p);
+        float g = 0.5f + 0.5f * (float) Math.sin(animTime * 4f);   // glowing eyes
+        p.setColor(Color.argb(255, 120 + (int) (80 * g), 255, 110));
+        c.drawCircle(-0.13f, -0.06f, 0.035f + 0.015f * g, p);
+        c.drawCircle(0.13f, -0.06f, 0.035f + 0.015f * g, p);
+        stroke(0xFF8A8676, 0.025f);
+        for (int i = -2; i <= 2; i++) c.drawLine(i * 0.065f, 0.22f, i * 0.065f, 0.36f, p);
+        c.drawLine(-0.17f, 0.22f, 0.17f, 0.22f, p);
+    }
+
+    // ---- Thanksgiving ----
+    private void drawLeaf(Canvas c, int col, float seed) {
+        c.save();
+        c.rotate((float) Math.sin(animTime * 1.7f + seed) * 25f + Math.abs(seed * 37f) % 40f - 20f);
+        starPath(0f, -0.02f, 0.4f, 5, 0.55f, 0f);    // maple-like leaf
+        fill(col);
+        c.drawPath(path, p);
+        stroke(darker(col, 0.7f), 0.03f);
+        c.drawLine(0f, 0.35f, 0f, -0.3f, p);
+        c.drawLine(0f, 0.05f, -0.24f, -0.12f, p);
+        c.drawLine(0f, 0.05f, 0.24f, -0.12f, p);
+        stroke(0xFF6B4423, 0.04f);
+        c.drawLine(0f, 0.3f, 0.02f, 0.5f, p);
+        c.restore();
+    }
+
+    private void drawTurkey(Canvas c) {
+        int[] feathers = {0xFFFFCF3A, 0xFFE8A21E, 0xFFFFE07A, 0xFFD48A1E};
+        for (int i = 0; i < 7; i++) {        // fanned tail
+            c.save();
+            c.rotate(-72f + i * 24f, 0f, 0.1f);
+            fill(feathers[i % feathers.length]);
+            rect.set(-0.09f, -0.48f, 0.09f, 0.1f);
+            c.drawOval(rect, p);
+            c.restore();
+        }
+        fill(0xFFB8862A);                    // body
+        c.drawCircle(0f, 0.12f, 0.22f, p);
+        fill(0xFFD8A23A);                    // head
+        c.drawCircle(0f, -0.12f, 0.11f, p);
+        fill(0xFF141414);
+        c.drawCircle(-0.04f, -0.15f, 0.022f, p);
+        c.drawCircle(0.04f, -0.15f, 0.022f, p);
+        fill(0xFFFF9A1E);                    // beak
+        path.reset();
+        path.moveTo(-0.04f, -0.1f); path.lineTo(0.04f, -0.1f); path.lineTo(0f, -0.04f); path.close();
+        c.drawPath(path, p);
+        fill(0xFFE53935);                    // wattle
+        rect.set(0.01f, -0.07f, 0.06f, 0.03f);
+        c.drawOval(rect, p);
+    }
+
+    // ---- Christmas ----
+    private void drawPresent(Canvas c, int col) {
+        fill(col);
+        c.drawRect(-0.32f, -0.22f, 0.32f, 0.36f, p);
+        fill(lighter(col, 0.2f));
+        c.drawRect(-0.36f, -0.32f, 0.36f, -0.18f, p);
+        fill(0xFFFFD45A);                    // ribbon
+        c.drawRect(-0.05f, -0.32f, 0.05f, 0.36f, p);
+        c.drawRect(-0.32f, 0.02f, 0.32f, 0.1f, p);
+        rect.set(-0.22f, -0.48f, -0.01f, -0.3f);   // bow
+        c.drawOval(rect, p);
+        rect.set(0.01f, -0.48f, 0.22f, -0.3f);
+        c.drawOval(rect, p);
+        fill(darker(0xFFFFD45A, 0.8f));
+        c.drawCircle(0f, -0.33f, 0.05f, p);
+    }
+
+    private void drawXmasTree(Canvas c) {
+        fill(0xFF6B4423);
+        c.drawRect(-0.06f, 0.3f, 0.06f, 0.45f, p);
+        int[] g = {0xFF1E6B34, 0xFF268040, 0xFF2E944A};
+        float[][] tiers = {{0.42f, 0.32f, -0.05f}, {0.33f, 0.08f, -0.28f}, {0.24f, -0.15f, -0.5f}};
+        for (int i = 0; i < 3; i++) {
+            path.reset();
+            path.moveTo(-tiers[i][0], tiers[i][1]);
+            path.lineTo(tiers[i][0], tiers[i][1]);
+            path.lineTo(0f, tiers[i][2]);
+            path.close();
+            fill(g[i]);
+            c.drawPath(path, p);
+        }
+        int[] orn = {0xFFE53935, 0xFF4A8CFF, 0xFFFFD45A, 0xFFFF6FD8};
+        float[][] pos = {{-0.2f, 0.22f}, {0.15f, 0.2f}, {-0.05f, 0.05f}, {0.14f, -0.06f}, {-0.12f, -0.13f}, {0.04f, -0.3f}};
+        for (int i = 0; i < pos.length; i++) {
+            float tw = 0.5f + 0.5f * (float) Math.sin(animTime * 5f + i * 1.3f);
+            p.setColor(fog(orn[i % orn.length]));
+            p.setAlpha((int) (160 + 95 * tw));
+            c.drawCircle(pos[i][0], pos[i][1], 0.045f, p);
+        }
+        p.setAlpha(255);
+        starPath(0f, -0.56f, 0.12f, 5, 0.45f, animTime * 0.5f);
+        fill(0xFFFFE07A);
+        c.drawPath(path, p);
+    }
+
+    // ---- falling snow / leaves / confetti (screen space) ----------------------------
+
+    private void initWeather() {
+        weatherFor = holiday;
+        for (int i = 0; i < wx.length; i++) {
+            wx[i] = rnd.nextFloat();
+            wy[i] = rnd.nextFloat();
+            wsp[i] = 0.06f + rnd.nextFloat() * 0.1f;
+            wsz[i] = 0.5f + rnd.nextFloat();
+            wcol[i] = rnd.nextInt(4);
+        }
+    }
+
+    private void updateWeather(float dt) {
+        int kind = Holidays.WEATHER[holiday];
+        if (kind == 0) return;
+        if (weatherFor != holiday) initWeather();
+        float fall = kind == 1 ? 1f : kind == 2 ? 0.8f : 1.3f;
+        for (int i = 0; i < wx.length; i++) {
+            wy[i] += wsp[i] * fall * dt;
+            wx[i] += ((float) Math.sin(animTime * 1.3f + i) * 0.03f - latVel * 0.004f) * dt;
+            if (wy[i] > 1.05f) { wy[i] = -0.05f; wx[i] = rnd.nextFloat(); }
+            if (wx[i] < -0.05f) wx[i] += 1.1f;
+            if (wx[i] > 1.05f) wx[i] -= 1.1f;
+        }
+    }
+
+    private static final int[] LEAF_COLS = {0xFFE8661E, 0xFFC62828, 0xFFE0A21E, 0xFF9E5A1E};
+    private static final int[] CONFETTI_JULY = {0xFFE53935, 0xFFFFFFFF, 0xFF1E5BD8, 0xFFFFFFFF};
+    private static final int[] CONFETTI_NY = {0xFFFFD45A, 0xFFE0E0E0, 0xFFFF5FA2, 0xFF3FC1FF};
+
+    private void drawWeather(Canvas c) {
+        int kind = Holidays.WEATHER[holiday];
+        if (kind == 0 || weatherFor != holiday) return;
+        int count = kind == 1 ? 70 : kind == 2 ? 26 : 45;
+        p.setStyle(Paint.Style.FILL);
+        for (int i = 0; i < count; i++) {
+            float x = wx[i] * W, y = wy[i] * H, sz = wsz[i] * H;
+            if (kind == 1) {
+                p.setColor(0xD8FFFFFF);
+                c.drawCircle(x, y, sz * 0.006f, p);
+            } else if (kind == 2) {
+                p.setColor(LEAF_COLS[wcol[i]]);
+                c.save();
+                c.rotate(animTime * 90f * (wsp[i] * 10f - 1f) + i * 40f, x, y);
+                rect.set(x - sz * 0.018f, y - sz * 0.009f, x + sz * 0.018f, y + sz * 0.009f);
+                c.drawOval(rect, p);
+                c.restore();
+            } else {
+                p.setColor((holiday == Holidays.JULY_4 ? CONFETTI_JULY : CONFETTI_NY)[wcol[i]]);
+                c.save();
+                c.rotate(animTime * 200f * wsp[i] * 10f + i * 30f, x, y);
+                c.drawRect(x - sz * 0.009f, y - sz * 0.005f, x + sz * 0.009f, y + sz * 0.005f, p);
+                c.restore();
+            }
         }
     }
 
