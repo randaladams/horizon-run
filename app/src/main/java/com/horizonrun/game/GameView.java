@@ -147,7 +147,19 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private boolean tutSprinted;
     private Obj tutObj;
     private float sceneryAcc;
-    private static final int TUT_STEPS = 10;
+    private static final int TUT_STEPS = 12;
+    // tutorial step numbers
+    private static final int T_LEFT = 0, T_RIGHT = 1, T_SPRINT = 2, T_RELEASE = 3, T_JUMP = 4,
+            T_ROCK = 5, T_WALL = 6, T_BRANCH = 7, T_DEER = 8, T_SNAIL = 9, T_CARD = 10;
+    private final ArrayList<Obj> tutWall = new ArrayList<>();
+    private boolean tutJumped;
+
+    // ---- jumping (tap the left half of the screen) ---------------------------------
+    private static final float JUMP_V = 7.5f;     // take-off speed, m/s
+    private static final float GRAVITY = 18.75f;  // gives a ~1.5 m, 0.8 s jump
+    private volatile boolean jumpReq;
+    private float jumpH, jumpV;
+    private boolean airborne;
     private static final float SNAIL_SLOW = 25f;   // seconds of speed build-up removed
 
     // ---- rendering ----------------------------------------------------------------
@@ -376,24 +388,64 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                         return true;
                     }
                 }
-                touching = true;
-                tapped = true;
+                pointerDown(e);
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
-                touching = true;
-                tapped = true;
-                break;
-            case MotionEvent.ACTION_POINTER_UP:
-                touching = e.getPointerCount() > 1;
-                break;
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                touching = false;
+                pointerDown(e);
                 break;
             default:
                 break;
         }
+        // Sprint while any finger is held on the right half of the screen.
+        int action = e.getActionMasked();
+        boolean lifting = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP
+                || action == MotionEvent.ACTION_CANCEL;
+        boolean right = false;
+        if (action != MotionEvent.ACTION_CANCEL) {
+            for (int i = 0; i < e.getPointerCount(); i++) {
+                if (lifting && i == e.getActionIndex()) continue;
+                if (e.getX(i) >= W * 0.5f) right = true;
+            }
+        }
+        touching = right;
         return true;
+    }
+
+    private void pointerDown(MotionEvent e) {
+        tapped = true;
+        int idx = e.getActionIndex();
+        if ((state == RUN || state == TUTORIAL) && e.getX(idx) < W * 0.5f) jumpReq = true;
+    }
+
+    /** Take off if on the ground, then simple ballistic flight. */
+    private void updateJump(float dt) {
+        if (jumpReq) {
+            jumpReq = false;
+            if (!airborne) {
+                airborne = true;
+                jumpV = JUMP_V;
+                if (state == TUTORIAL) tutJumped = true;
+            }
+        }
+        if (airborne) {
+            jumpH += jumpV * dt;
+            jumpV -= GRAVITY * dt;
+            if (jumpH <= 0f) {
+                jumpH = 0f;
+                jumpV = 0f;
+                airborne = false;
+                shake = Math.max(shake, 0.12f);   // little landing bump
+            }
+        }
+    }
+
+    /** How high you must be to sail over this obstacle (huge = can't be jumped). */
+    private float clearHeight(Obj o) {
+        switch (o.type) {
+            case ROCK: return 0.8f * o.size;
+            case FOX:  return 0.75f;
+            default:   return 999f;
+        }
     }
 
     @Override
@@ -447,6 +499,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         newHigh = false;
         goldFlash = 0;
         bestAtStart = best;
+        jumpH = 0;
+        jumpV = 0;
+        airborne = false;
+        jumpReq = false;
         flowerTimer = 0;
         nextFlower = 3f + rnd.nextFloat() * 2f;
         activeTrail = -1;
@@ -547,6 +603,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         px += latVel * dt;
         roll += (-steer * 5f - roll) * Math.min(1f, dt * 6f);
 
+        updateJump(dt);
         float dz = speed * dt;
         distance += dz;
         bobPhase += dz * 0.55f;
@@ -647,7 +704,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             if (collide && o.solid() && !o.judged && prevZ >= HIT_Z && o.z < HIT_Z) {
                 o.judged = true;
                 float gapToPlayer = clearance(o);
-                if (gapToPlayer < 0f) {
+                if (gapToPlayer < 0f && jumpH >= clearHeight(o)) {
+                    bonus += 10;
+                    msg = "JUMP!  +10";
+                    msgTimer = 0.8f;
+                } else if (gapToPlayer < 0f) {
                     crash();
                     return;
                 } else if (gapToPlayer < 0.7f) {
@@ -764,11 +825,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float center = predictX(z);
         float gapX = center + (rnd.nextFloat() * 2f - 1f) * 7f;
         int kind = rnd.nextBoolean() ? PINE : ROCK;
-        for (float x = center - 26f; x <= center + 26f; x += 2.6f) {
-            if (Math.abs(x - gapX) < 2.4f) continue;
+        // About half the rock rows are solid walls: no way around, you have to jump.
+        boolean wall = kind == ROCK && rnd.nextBoolean();
+        if (wall) {
+            msg = "ROCK WALL AHEAD \u2014 JUMP!";
+            msgTimer = 1.6f;
+        }
+        float half = wall ? 70f : 26f;   // walls are too wide to steer around
+        for (float x = center - half; x <= center + half; x += 2.4f) {
+            if (!wall && Math.abs(x - gapX) < 2.4f) continue;
             Obj o = make(kind, x + (rnd.nextFloat() - 0.5f) * 0.3f, z + (rnd.nextFloat() - 0.5f) * 1.5f);
             if (kind == PINE) { o.size = 1f; o.radius = 1.05f; }
-            else { o.size = 1.2f; o.radius = 1.05f; }
+            else { o.size = 1.15f; o.radius = 1.05f; }
             objs.add(o);
         }
     }
@@ -871,7 +939,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private float eye() {
-        return EYE + ((state == RUN || state == TUTORIAL) ? (float) Math.sin(bobPhase) * 0.05f : 0f);
+        return EYE + jumpH + ((state == RUN || state == TUTORIAL) && !airborne ? (float) Math.sin(bobPhase) * 0.05f : 0f);
     }
 
     private float projX(float dx, float z) { return cx + f * dx / z; }
@@ -1436,6 +1504,16 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText("SPRINT", W - pad, by + bh + H * 0.04f, txt);
             txt.setColor(Color.WHITE);
 
+            if (state == RUN && elapsed < 6f) {
+                float a = clamp((6f - elapsed) / 1.5f, 0f, 1f);
+                txt.setTextSize(H * 0.035f);
+                txt.setColor(Color.argb((int) (220 * a), 255, 255, 255));
+                txt.setTextAlign(Paint.Align.LEFT);
+                c.drawText("\u25C0 TAP: JUMP", pad, H - pad * 0.8f, txt);
+                txt.setTextAlign(Paint.Align.RIGHT);
+                c.drawText("HOLD: SPRINT \u25B6", W - pad, H - pad * 0.8f, txt);
+                txt.setColor(Color.WHITE);
+            }
             if (msgTimer > 0 && state == RUN) {
                 txt.setTextAlign(Paint.Align.CENTER);
                 txt.setTextSize(H * 0.055f);
@@ -1454,7 +1532,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText("HORIZON RUN", cx, H * 0.36f, txt);
             txt.setTextSize(H * 0.045f);
             c.drawText("Tilt your phone left and right to steer", cx, H * 0.52f, txt);
-            c.drawText("Hold a finger on the screen to sprint", cx, H * 0.6f, txt);
+            c.drawText("Hold the RIGHT side to sprint  \u2022  tap the LEFT side to jump", cx, H * 0.6f, txt);
             c.drawText("Dodge obstacles  \u2022  glowing snails slow you down  \u2022  flowers score points", cx, H * 0.68f, txt);
             txt.setTextSize(H * 0.032f);
             txt.setColor(0xCCFFFFFF);
@@ -1543,9 +1621,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private static final String[] TUT_TITLE = {
             "Tilt your phone LEFT",
             "Now tilt RIGHT",
-            "Hold a finger anywhere to SPRINT",
+            "Hold the RIGHT side to SPRINT",
             "Lift your finger to ease off",
+            "Tap the LEFT side to JUMP",
             "Steer around the rock",
+            "Rock wall! JUMP over it",
             "Low branches hang at head height",
             "Animals move!",
             "Run through the glowing snail",
@@ -1554,24 +1634,27 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private static final String[] TUT_BODY = {
             "Hold it like a steering wheel and tip the left side down.",
             "The more you tilt, the faster you slide sideways.",
-            "Keep holding — the longer you hold, the faster you go.",
+            "Keep holding \u2014 the longer you hold, the faster you go.",
             "You drop back to your base speed.",
+            "A quick tap sends you about 1.5 m into the air.",
             "Obstacles rise over the curved horizon and grow as they get close.",
+            "No way around \u2014 tap the left side just before you reach it.",
             "You can't duck — steer past the end of the limb.",
             "Watch which way the deer runs and pass behind it.",
             "Snails knock your base speed back down. Steer into it!",
             "", ""};
     private static final String[][] TUT_CARD = {
-            {},{},{},{},{},{},{},{},
+            {},{},{},{},{},{},{},{},{},{},
             {"Your score is the distance you run, in metres.",
              "Your base speed keeps rising the longer you survive.",
              "Sprinting adds speed on top — let go to fall back to base speed.",
              "Flowers +20 each, +100 for a full trail of 5. Golden flowers +150.",
-             "Near misses earn +25. Snails give +10 and slow you down.",
+             "Near misses +25, jumps over obstacles +10, snails +10.",
              "Pass your best score and the screen flashes gold."},
             {"Sun / moon button (start screen): light or dark mode.",
              "Reset Best Score (bottom-left, tap twice): clears your record.",
              "How To Play (bottom-right): replay this tutorial any time.",
+             "You can jump rocks and foxes \u2014 not trees, deer, bears or branches.",
              "Hold the phone level to run straight.",
              "Snails turn up more often as you get faster — use them!"}};
 
@@ -1593,6 +1676,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         sceneryAcc = 0;
         decorAcc = 0;
         tutStep = 0;
+        jumpH = 0;
+        jumpV = 0;
+        airborne = false;
+        jumpReq = false;
         enterTutStep();
         for (float z = 2f; z < 80f; z += 1f) { spawnDecor(z); spawnDecor(z); }
         for (float z = 20f; z < SPAWN_Z; z += 7f) spawnScenery(z);
@@ -1606,6 +1693,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         tutObj = null;
         tutDelay = 0.8f;
         tutSprinted = false;
+        tutJumped = false;
+        tutWall.clear();
     }
 
     private void finishTutorial() {
@@ -1630,7 +1719,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void tutSuccess() {
-        tutSay(tutStep < 7 ? "NICE!" : "GOT IT!", true, 1.1f);
+        tutSay(tutStep < T_SNAIL ? "NICE!" : "GOT IT!", true, 1.1f);
         tutWait = 1.1f;
     }
 
@@ -1657,6 +1746,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float dz = speed * dt;
         distance += dz;
         bobPhase += dz * 0.55f;
+        updateJump(dt);
         advanceWorld(dz, dt, false);
 
         sceneryAcc += dz;
@@ -1675,21 +1765,24 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
 
         switch (tutStep) {
-            case 0:   // tilt left
+            case T_LEFT:
                 tutHold = steer < -0.4f ? tutHold + dt : 0f;
                 if (tutHold > 0.5f) tutSuccess();
                 break;
-            case 1:   // tilt right
+            case T_RIGHT:
                 tutHold = steer > 0.4f ? tutHold + dt : 0f;
                 if (tutHold > 0.5f) tutSuccess();
                 break;
-            case 2:   // sprint
+            case T_SPRINT:
                 if (boost >= 18f) tutSuccess();
                 break;
-            case 3:   // release
+            case T_RELEASE:
                 if (!touching && boost < 2f && tutTimer > 0.4f) tutSuccess();
                 break;
-            case 4: case 5: case 6: case 7:
+            case T_JUMP:
+                if (tutJumped && !airborne) tutSuccess();
+                break;
+            case T_ROCK: case T_WALL: case T_BRANCH: case T_DEER: case T_SNAIL:
                 updateTutChallenge(dt);
                 break;
             default:  // info cards
@@ -1712,17 +1805,31 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 if (b.solid() && Math.abs(b.x - px) < 14f) objs.remove(i);
             }
             switch (tutStep) {
-                case 4:
+                case T_ROCK:
                     tutObj = make(ROCK, px, z);
                     tutObj.size = 1.5f;
                     tutObj.radius = 1.35f;
                     objs.add(tutObj);
                     break;
-                case 5:
+                case T_WALL: {
+                    // wide enough that steering around it isn't an option
+                    tutWall.clear();
+                    float best = 999f;
+                    for (float x = px - 60f; x <= px + 60f; x += 2.4f) {
+                        Obj r = make(ROCK, x, z);
+                        r.size = 1.15f;
+                        r.radius = 1.05f;
+                        objs.add(r);
+                        tutWall.add(r);
+                        if (Math.abs(x - px) < best) { best = Math.abs(x - px); tutObj = r; }
+                    }
+                    break;
+                }
+                case T_BRANCH:
                     tutObj = make(BRANCH, px, z);
                     objs.add(tutObj);
                     break;
-                case 6: {
+                case T_DEER: {
                     tutObj = make(DEER, px, z);
                     // make sure it crosses right in front of the player
                     float dir = Math.signum(tutObj.vx);
@@ -1748,8 +1855,20 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     collectSnail();
                     objs.remove(tutObj);
                 }
+            } else if (tutStep == T_WALL) {
+                boolean blocked = false;
+                for (int i = 0; i < tutWall.size(); i++) {
+                    Obj r = tutWall.get(i);
+                    r.judged = true;
+                    if (clearance(r) < 0f && jumpH < clearHeight(r)) blocked = true;
+                }
+                ok = !blocked;
+                if (!ok) {
+                    tutSay(jumpH > 0f ? "Too early or too late \u2014 jump just before it!"
+                                      : "Tap the LEFT side to jump over it!", false, 2.2f);
+                }
             } else {
-                ok = clearance(tutObj) >= 0f;
+                ok = clearance(tutObj) >= 0f || jumpH >= clearHeight(tutObj);
             }
             if (ok) {
                 tutSuccess();
@@ -1757,7 +1876,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 if (tutObj.type == SNAIL) {
                     tutSay("Missed it — steer right into it. Try again!", false, 2.2f);
                 } else {
-                    tutSay("Ouch! That would have been a crash. Try again.", false, 2.2f);
+                    if (tutStep != T_WALL) tutSay("Ouch! That would have been a crash. Try again.", false, 2.2f);
                     flash = 0.7f;
                     shake = 0.5f;
                     try {
@@ -1810,7 +1929,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private void drawTutorialHud(Canvas c) {
         float pad = Math.max(W * 0.035f, H * 0.05f);
-        boolean card = tutStep >= 8;
+        boolean card = tutStep >= T_CARD;
 
         if (!card) {
             // instruction panel at the top
@@ -1831,8 +1950,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText(TUT_BODY[tutStep], cx, H * 0.215f, txt);
             txt.setColor(Color.WHITE);
 
-            if (tutStep <= 1 && tutWait < 0f) drawTiltHint(c, tutStep == 0 ? -1f : 1f);
-            if (tutStep == 2 || tutStep == 3) drawSprintHint(c, tutStep == 2);
+            if (tutStep <= T_RIGHT && tutWait < 0f) drawTiltHint(c, tutStep == T_LEFT ? -1f : 1f);
+            if (tutStep == T_SPRINT || tutStep == T_RELEASE) drawSprintHint(c, tutStep == T_SPRINT);
+            if ((tutStep == T_JUMP || tutStep == T_WALL) && tutWait < 0f) drawJumpHint(c);
         } else {
             // full information card
             float pw = W * 0.74f, ph = H * 0.74f;
@@ -1918,10 +2038,46 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         p.setStyle(Paint.Style.FILL);
     }
 
+    /** Tints one half of the screen to show where to touch. */
+    private void halfHighlight(Canvas c, boolean left) {
+        float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 4f);
+        float l = left ? 0f : W * 0.5f, r = left ? W * 0.5f : W;
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(Color.argb((int) (25 + 30 * pulse), 255, 212, 70));
+        c.drawRect(l, H * 0.28f, r, H, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(3f, H * 0.006f));
+        p.setColor(Color.argb((int) (90 + 100 * pulse), 255, 212, 70));
+        c.drawLine(W * 0.5f, H * 0.3f, W * 0.5f, H * 0.97f, p);
+        p.setStyle(Paint.Style.FILL);
+    }
+
+    /** Left-half highlight with a bouncing figure arrow: tap here to jump. */
+    private void drawJumpHint(Canvas c) {
+        halfHighlight(c, true);
+        float x = W * 0.25f, y = H * 0.62f;
+        float bounce = Math.abs((float) Math.sin(animTime * 3.5f)) * H * 0.06f;
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeWidth(Math.max(4f, H * 0.012f));
+        p.setColor(0xEEFFD45A);
+        float s = H * 0.05f;
+        float ay = y - bounce;
+        c.drawLine(x - s, ay, x, ay - s, p);
+        c.drawLine(x, ay - s, x + s, ay, p);
+        c.drawLine(x, ay - s, x, ay + s * 1.2f, p);
+        p.setStyle(Paint.Style.FILL);
+        txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.04f);
+        txt.setColor(Color.WHITE);
+        c.drawText("TAP HERE TO JUMP", x, y + H * 0.13f, txt);
+    }
+
     /** Pulsing fingertip and the sprint meter. */
     private void drawSprintHint(Canvas c, boolean hold) {
-        float x = cx, y = H * 0.62f;
+        float x = W * 0.75f, y = H * 0.62f;
         if (hold) {
+            halfHighlight(c, false);
             float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 5f);
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(Math.max(3f, H * 0.006f));
@@ -1932,7 +2088,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawCircle(x, y, H * 0.045f, p);
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setTextSize(H * 0.035f);
-            c.drawText(touching ? "KEEP HOLDING..." : "TOUCH & HOLD", x, y + H * 0.12f, txt);
+            c.drawText(touching ? "KEEP HOLDING..." : "HOLD HERE", x, y + H * 0.12f, txt);
         }
         float bw = W * 0.34f, bh = H * 0.028f;
         float bx = cx - bw / 2, by = H * 0.8f;

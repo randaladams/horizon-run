@@ -5,12 +5,13 @@ A first-person running game for Android, played in landscape. You run across a s
 ## Controls
 
 - **Tilt the phone left/right** to steer.
-- **Hold a finger on the screen** to sprint. The longer you hold, the faster you go.
+- **Hold the right half of the screen** to sprint. The longer you hold, the faster you go.
+- **Tap the left half of the screen** to jump (about 1.5 m). You can clear rocks and foxes; trees, deer, bears and low branches still have to be steered around. Some rows of rocks are solid walls with no gap, so jumping is the only way through. Each jump over an obstacle is +10.
 - **Lift your finger** and you ease back to your base speed, which keeps climbing the longer the run lasts.
 
 **Flowers** add to your score: glowing flowers come in curving trails of five, +20 each and a **Bouquet +100** bonus for collecting the whole trail; rare **golden flowers** are worth +150. Close calls earn +25 bonus metres. Run through a **glowing snail** to knock your base speed back down (about 27 km/h); snails show up every 5–9 seconds, and more often the faster you're going. The **Reset best score** button (bottom-left of the start and crash screens, tap twice) clears your record for testing. Your best distance is saved on the phone.
 
-New to the game? Tap **How to play** on the start screen for a 10-step practice run covering steering, sprinting, each kind of obstacle, snails and the options.
+New to the game? Tap **How to play** on the start screen for a 12-step practice run covering steering, sprinting, jumping (including a rock wall), each kind of obstacle, snails and the options.
 
 ## Install on your phone
 
