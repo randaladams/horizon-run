@@ -15,7 +15,7 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId "com.horizonrun.game"
+        applicationId "com.adamselite.horizonrun"
         minSdk 26
         targetSdk 36
         versionCode buildNumber
