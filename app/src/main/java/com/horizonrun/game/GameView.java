@@ -218,8 +218,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private volatile boolean scoresReq, backReq, privacyReq;
     // back button: pause the run first, end it on a second press; exit needs two presses too
     private volatile boolean paused, backInRun;
-    private volatile long exitPromptAt;
-    private static final long EXIT_WINDOW_MS = 3000;
+    // real buttons instead of "tap anywhere"
+    private volatile boolean exitDialog;
+    private volatile boolean startReq, doneReq, resumeReq, endRunReq, pauseReq, exitReq;
 
     // ---- holiday themes -----------------------------------------------------------
     private int holiday = Holidays.NONE;    // theme in use
@@ -472,9 +473,39 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     }
                 }
                 if (waitingForAd) return true;
-                if (exitPromptShowing() && (state == MENU || state == CRASH)) {
-                    if (!isFull() && inRect(e, exitUpL(), exitUpT(), exitUpR(), exitUpB())) upgradeReq = true;
-                    exitPromptAt = 0;      // tap dismisses "press back again to exit"
+                if (exitDialog && (state == MENU || state == CRASH)) {
+                    // only the dialog's buttons respond; stray taps do nothing
+                    if (inRect(e, dlgExitL(), dlgBtnT(), dlgExitR(), dlgBtnB())) exitReq = true;
+                    else if (inRect(e, dlgStayL(), dlgBtnT(), dlgStayR(), dlgBtnB())) exitDialog = false;
+                    else if (!isFull() && inRect(e, exitUpL(), exitUpT(), exitUpR(), exitUpB())) {
+                        exitDialog = false;
+                        upgradeReq = true;
+                    }
+                    return true;
+                }
+                if (state == RUN) {
+                    if (paused) {
+                        // pause menu: only RESUME and END RUN respond
+                        if (inRect(e, pResumeL(), pBtnT(), pResumeR(), pBtnB())) resumeReq = true;
+                        else if (inRect(e, pEndL(), pBtnT(), pEndR(), pBtnB())) endRunReq = true;
+                        return true;
+                    }
+                    if (inPauseBtn(e.getX(), e.getY())) {
+                        pauseReq = true;
+                        return true;
+                    }
+                }
+                if (state == MENU && inRect(e, startBtnL(), startBtnT(), startBtnR(), startBtnB())) {
+                    startReq = true;
+                    return true;
+                }
+                if (state == MENU && inRect(e, exitBtnL(), exitBtnT(), exitBtnR(), exitBtnB())) {
+                    exitDialog = true;
+                    return true;
+                }
+                if (state == CRASH && crashTimer > 0.9f
+                        && inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) {
+                    doneReq = true;
                     return true;
                 }
                 if (state == SCORES) {
@@ -533,6 +564,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 pointerDown(e);
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
+                if (state == RUN && (paused || inPauseBtn(e.getX(e.getActionIndex()), e.getY(e.getActionIndex())))) {
+                    if (!paused) pauseReq = true;
+                    return true;
+                }
                 pointerDown(e);
                 break;
             case MotionEvent.ACTION_UP:
@@ -575,7 +610,6 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private void pointerDown(MotionEvent e) {
         tapped = true;
-        exitPromptAt = 0;
         int idx = e.getActionIndex();
         if ((state == RUN || state == TUTORIAL) && e.getX(idx) < W * 0.5f) jumpReq = true;
     }
@@ -914,9 +948,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             advanceWorld(dz, dt, false);
             px += steer * 6f * dt;
             roll += (-steer * 5f - roll) * Math.min(1f, dt * 6f);
-            if (tapped && menuTime > 0.3f) {
-                tapped = false;
-                requestNewRun();
+            if (exitReq) {
+                exitReq = false;
+                closeApp();
+            }
+            if (startReq) {
+                startReq = false;
+                if (menuTime > 0.3f && !exitDialog) requestNewRun();
             }
             tapped = false;
             return;
@@ -926,9 +964,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             crashTimer += dt;
             shake = Math.max(0f, shake - dt * 1.6f);
             flash = Math.max(0f, flash - dt * 2f);
-            if (tapped && crashTimer > 0.9f) {
+            if (exitReq) {
+                exitReq = false;
+                finishRunStats();
+                closeApp();
+            }
+            if (doneReq && !exitDialog) {
                 // back to the start screen rather than straight into a new run
-                tapped = false;
+                doneReq = false;
                 finishRunStats();
                 resetRun();
                 state = MENU;
@@ -939,15 +982,23 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
 
         // ---- RUN ----
-        if (backInRun) {
+        if (backInRun || pauseReq) {
             backInRun = false;
-            if (paused) { quitRun(); return; }
+            pauseReq = false;
             paused = true;
         }
         if (paused) {
-            if (tapped) {               // tap to keep running
+            if (endRunReq) {
+                endRunReq = false;
+                resumeReq = false;
+                quitRun();
+                return;
+            }
+            if (resumeReq) {
+                resumeReq = false;
                 paused = false;
                 jumpReq = false;
+                touching = false;
             }
             tapped = false;
             return;
@@ -1098,19 +1149,22 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             return true;
         }
         if (state == RUN) {
-            backInRun = true;          // 1st press pauses, 2nd ends the run (handled in update)
+            backInRun = true;          // pauses the run (the pause menu has the buttons)
             return true;
         }
-        // start screen or crash screen: first press asks, second press (within 3 s) exits
-        long now = android.os.SystemClock.uptimeMillis();
-        if (exitPromptAt > 0 && now - exitPromptAt < EXIT_WINDOW_MS) return false;
-        exitPromptAt = now;
+        // start screen or crash screen: open (or close) the "Leave Horizon Run?" box
+        exitDialog = !exitDialog;
         return true;
     }
 
-    private boolean exitPromptShowing() {
-        return exitPromptAt > 0
-                && android.os.SystemClock.uptimeMillis() - exitPromptAt < EXIT_WINDOW_MS;
+    private boolean exitPromptShowing() { return exitDialog; }
+
+    private void closeApp() {
+        exitDialog = false;
+        final android.content.Context ctx = getContext();
+        if (ctx instanceof android.app.Activity) {
+            post(((android.app.Activity) ctx)::finish);
+        }
     }
 
     /** Unlocks a badge; full-version players see a little banner. */
@@ -2305,13 +2359,17 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     + Holidays.ITEMS[holiday].toLowerCase(Locale.US) + " score points", cx, H * 0.68f, txt);
             txt.setTextSize(H * 0.032f);
             txt.setColor(0xCCFFFFFF);
-            c.drawText("Sun / moon: light or dark mode  \u2022  Scores: your last 10 runs", cx, H * 0.745f, txt);
+            c.drawText("Sun / moon: light or dark mode  \u2022  Scores: your last 10 runs", cx, H * 0.735f, txt);
             txt.setColor(Color.WHITE);
-            float pulse = 0.6f + 0.4f * (float) Math.sin(menuTime * 4f);
-            txt.setColor(Color.argb((int) (255 * pulse), 255, 220, 120));
-            txt.setTextSize(H * 0.06f);
-            c.drawText("TAP TO START", cx, H * 0.84f, txt);
+            float pulse = 0.5f + 0.5f * (float) Math.sin(menuTime * 4f);
+            pill(c, startBtnL(), startBtnT(), startBtnR(), startBtnB(), 0xEE1E7A3C,
+                    Color.argb((int) (150 + 105 * pulse), 140, 255, 170), "");
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * 0.055f);
             txt.setColor(Color.WHITE);
+            c.drawText(zenMode && isFull() ? "START ZEN RUN" : "START",
+                    cx, (startBtnT() + startBtnB()) * 0.5f + H * 0.019f, txt);
+            pill(c, exitBtnL(), exitBtnT(), exitBtnR(), exitBtnB(), 0x55000000, 0x66FFFFFF, "\u2715  EXIT");
             if (best > 0) {
                 txt.setTextSize(H * 0.035f);
                 c.drawText("Best: " + best + " m", cx, H * 0.445f, txt);
@@ -2354,12 +2412,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             boolean offer = canOfferContinue();
             if (offer) drawContinueButton(c);
             if (crashTimer > 0.9f) {
-                float pulse = 0.6f + 0.4f * (float) Math.sin(crashTimer * 4f);
-                txt.setTextAlign(Paint.Align.CENTER);
-                txt.setColor(Color.argb((int) (255 * pulse * a), 255, 220, 120));
-                txt.setTextSize(H * 0.045f);
-                c.drawText(offer ? "or tap anywhere for the start screen" : "TAP TO CONTINUE",
-                        cx, offer ? H * 0.865f : H * 0.8f, txt);
+                pill(c, howBtnL(), howBtnT(), howBtnR(), howBtnB(), 0xAA203050, 0xCCFFFFFF,
+                        offer ? "NO THANKS" : "CONTINUE  \u25B8");
             }
             txt.setColor(Color.WHITE);
         }
@@ -2407,6 +2461,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         drawPickupFx(c);
 
+        if (state == RUN && !paused) drawPauseButton(c);
         if (state == RUN && paused) {
             p.setStyle(Paint.Style.FILL);
             p.setColor(0x99000000);
@@ -2414,19 +2469,24 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setColor(Color.WHITE);
             txt.setTextSize(H * 0.12f);
-            c.drawText("PAUSED", cx, H * 0.4f, txt);
-            txt.setTextSize(H * 0.05f);
-            float pulse = 0.6f + 0.4f * (float) Math.sin(animTime * 4f);
-            txt.setColor(Color.argb((int) (255 * pulse), 255, 220, 120));
-            c.drawText("TAP TO KEEP RUNNING", cx, H * 0.56f, txt);
+            c.drawText("PAUSED", cx, H * 0.38f, txt);
+            txt.setTextSize(H * 0.038f);
             txt.setColor(0xCCFFFFFF);
-            txt.setTextSize(H * 0.04f);
-            c.drawText("Press BACK again to end this run", cx, H * 0.66f, txt);
+            c.drawText(score() + " m so far", cx, H * 0.46f, txt);
+            float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 4f);
+            pill(c, pResumeL(), pBtnT(), pResumeR(), pBtnB(), 0xEE1E7A3C,
+                    Color.argb((int) (150 + 105 * pulse), 140, 255, 170), "\u25B6  RESUME");
+            pill(c, pEndL(), pBtnT(), pEndR(), pBtnB(), 0xCC5A1E1E, 0xCCFFFFFF, "END RUN");
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * 0.028f);
+            txt.setColor(0x99FFFFFF);
+            c.drawText(zenRun ? "Ending a zen run just finishes it" : "Ending the run saves it to your scores",
+                    cx, pBtnB() + H * 0.06f, txt);
             txt.setColor(Color.WHITE);
         }
         if ((state == MENU || state == CRASH) && exitPromptShowing()) {
-            float bw = W * 0.5f, bh = isFull() ? H * 0.24f : H * 0.36f;
-            rect.set(cx - bw / 2, H * 0.34f, cx + bw / 2, H * 0.34f + bh);
+            float bw = W * 0.5f, bh = isFull() ? H * 0.28f : H * 0.39f;
+            rect.set(cx - bw / 2, DLG_TOP * H, cx + bw / 2, DLG_TOP * H + bh);
             p.setStyle(Paint.Style.FILL);
             p.setColor(0xEE101828);
             c.drawRoundRect(rect, H * 0.03f, H * 0.03f, p);
@@ -2438,12 +2498,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setColor(Color.WHITE);
             txt.setTextSize(H * 0.055f);
-            float fy = isFull() ? 1f : 0.24f / 0.36f;
-            c.drawText("Leave Horizon Run?", cx, rect.top + bh * 0.42f * fy, txt);
-            txt.setTextSize(H * 0.035f);
-            txt.setColor(0xCCFFFFFF);
-            c.drawText("Press BACK again to exit  \u2022  tap to stay", cx, rect.top + bh * 0.75f * fy, txt);
-            txt.setColor(Color.WHITE);
+            c.drawText("Leave Horizon Run?", cx, rect.top + H * 0.085f, txt);
+            pill(c, dlgExitL(), dlgBtnT(), dlgExitR(), dlgBtnB(), 0xCC5A1E1E, 0xCCFFFFFF, "EXIT");
+            pill(c, dlgStayL(), dlgBtnT(), dlgStayR(), dlgBtnB(), 0xEE1E7A3C, 0xCCFFFFFF, "STAY");
             if (!isFull()) {
                 float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 4f);
                 pill(c, exitUpL(), exitUpT(), exitUpR(), exitUpB(), 0xDD8A6A10,
@@ -2972,6 +3029,48 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private float resetBtnB() { return H - Math.max(W * 0.02f, H * 0.04f); }
     private float resetBtnT() { return resetBtnB() - H * 0.09f; }
 
+    // ---- start / exit / pause buttons ------------------------------------------------
+    private static final float DLG_TOP = 0.28f;
+    private float startBtnL() { return cx - W * 0.14f; }
+    private float startBtnR() { return cx + W * 0.14f; }
+    private float startBtnT() { return H * 0.755f; }
+    private float startBtnB() { return H * 0.85f; }
+    private float exitBtnL() { return Math.max(W * 0.035f, H * 0.05f); }
+    private float exitBtnR() { return exitBtnL() + W * 0.11f; }
+    private float exitBtnT() { return Math.max(W * 0.02f, H * 0.04f); }
+    private float exitBtnB() { return exitBtnT() + H * 0.085f; }
+    private float dlgBtnT() { return DLG_TOP * H + H * 0.13f; }
+    private float dlgBtnB() { return DLG_TOP * H + H * 0.225f; }
+    private float dlgExitL() { return cx - W * 0.2f; }
+    private float dlgExitR() { return cx - W * 0.02f; }
+    private float dlgStayL() { return cx + W * 0.02f; }
+    private float dlgStayR() { return cx + W * 0.2f; }
+    private float pBtnT() { return H * 0.53f; }
+    private float pBtnB() { return H * 0.64f; }
+    private float pResumeL() { return cx - W * 0.22f; }
+    private float pResumeR() { return cx - W * 0.02f; }
+    private float pEndL() { return cx + W * 0.02f; }
+    private float pEndR() { return cx + W * 0.22f; }
+    private float pauseX() { return cx; }
+    private float pauseY() { return Math.max(W * 0.02f, H * 0.04f) + H * 0.045f; }
+    private float pauseR() { return H * 0.045f; }
+
+    private boolean inPauseBtn(float x, float y) {
+        float dx = x - pauseX(), dy = y - pauseY(), r = pauseR() * 1.9f;
+        return dx * dx + dy * dy < r * r;
+    }
+
+    /** Faint pause button at the top centre during a run. */
+    private void drawPauseButton(Canvas c) {
+        float x = pauseX(), y = pauseY(), r = pauseR();
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0x44000000);
+        c.drawCircle(x, y, r * 1.25f, p);
+        p.setColor(0x99FFFFFF);
+        c.drawRect(x - r * 0.42f, y - r * 0.5f, x - r * 0.14f, y + r * 0.5f, p);
+        c.drawRect(x + r * 0.14f, y - r * 0.5f, x + r * 0.42f, y + r * 0.5f, p);
+    }
+
     // ---- start-screen middle buttons, upgrade buttons ---------------------------------
     private float midBtnW() { return W * 0.2f; }
     private float midGap() { return (howBtnL() - resetBtnR() - 2 * midBtnW()) / 3f; }
@@ -2979,8 +3078,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private float pickBtnL() { return modeBtnL() + midBtnW() + midGap(); }
     private float exitUpL() { return cx - W * 0.21f; }
     private float exitUpR() { return cx + W * 0.21f; }
-    private float exitUpT() { return H * 0.34f + H * 0.25f; }
-    private float exitUpB() { return H * 0.34f + H * 0.33f; }
+    private float exitUpT() { return DLG_TOP * H + H * 0.26f; }
+    private float exitUpB() { return DLG_TOP * H + H * 0.345f; }
     private float buyBtnL() { return cx - W * 0.16f; }
     private float buyBtnR() { return cx + W * 0.16f; }
     private float buyBtnT() { return resetBtnT() - H * 0.02f; }
@@ -3026,7 +3125,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private void drawToasts(Canvas c) {
         if (badgeToastTimer > 0f && isFull()) {
             float a = clamp(badgeToastTimer * 2f, 0f, 1f);
-            float bw = W * 0.36f, bh = H * 0.1f, top = H * 0.04f;
+            float bw = W * 0.36f, bh = H * 0.1f, top = H * 0.17f;   // below the pause button
             rect.set(cx - bw / 2, top, cx + bw / 2, top + bh);
             p.setStyle(Paint.Style.FILL);
             p.setColor(Color.argb((int) (220 * a), 40, 30, 0));
