@@ -48,7 +48,7 @@ jobs:
           cp app/build/outputs/bundle/release/app-release.aab HorizonRun.aab
           rm -f "$RUNNER_TEMP/upload.jks"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: HorizonRun
           path: |
