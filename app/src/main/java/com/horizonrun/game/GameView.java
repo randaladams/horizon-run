@@ -131,7 +131,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     // score flowers
     private static final int FLOWER_PTS = 20, BOUQUET_PTS = 100, GOLD_PTS = 150, TRAIL_LEN = 5;
     private float flowerTimer, nextFlower = 3f;
-    private int trailId, trailGot, trailMissed, activeTrail = -1;
+    private int trailId;
+    // every trail on screen keeps its own tally: trail id -> {collected, missed}
+    private final java.util.HashMap<Integer, int[]> trails = new java.util.HashMap<>();
     private int flowersRun;
     private String popText = "";
     private float popTimer;
@@ -755,7 +757,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         jumpReq = false;
         flowerTimer = 0;
         nextFlower = 3f + rnd.nextFloat() * 2f;
-        activeTrail = -1;
+        trails.clear();
         flowersRun = 0;
         popTimer = 0;
         pinkFlash = 0;
@@ -1455,8 +1457,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     collectFlower(o);
                     objs.remove(i);
                     continue;
-                } else if (o.type == BLOOM && o.trail == activeTrail) {
-                    trailMissed++;
+                } else if (o.type == BLOOM) {
+                    int[] t = trails.get(o.trail);
+                    if (t != null) {
+                        t[1]++;
+                        if (t[0] + t[1] >= TRAIL_LEN) trails.remove(o.trail);
+                    }
                 }
             }
 
@@ -1569,8 +1575,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private boolean crowded(Obj n) {
         for (int i = 0; i < objs.size(); i++) {
             Obj o = objs.get(i);
-            if (!o.solid()) continue;
-            if (Math.abs(o.z - n.z) < 6f && Math.abs(o.x - n.x) < o.radius + n.radius + 1.5f) return true;
+            boolean pickup = o.type == BLOOM || o.type == GOLD_BLOOM || o.type == SNAIL;
+            if (!o.solid() && !pickup) continue;
+            float r = pickup ? 1.2f : o.radius;
+            if (Math.abs(o.z - n.z) < 6f && Math.abs(o.x - n.x) < r + n.radius + 1.5f) return true;
         }
         return false;
     }
@@ -3641,9 +3649,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     /** Five flowers in a gentle curve across the field, starting off to one side. */
     private void spawnFlowerTrail(float z) {
         trailId++;
-        activeTrail = trailId;
-        trailGot = 0;
-        trailMissed = 0;
+        trails.put(trailId, new int[2]);
         float side = rnd.nextBoolean() ? 1f : -1f;
         float x0 = predictX(z) + side * (2f + rnd.nextFloat() * 6f);
         float drift = -side * (0.6f + rnd.nextFloat() * 1.2f);   // sweeps back across
@@ -3706,9 +3712,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         popText = "+" + FLOWER_PTS;
         popColor = 0xFFFFA8D8;
         popTimer = 1.0f;
-        if (o.trail == activeTrail) {
-            trailGot++;
-            if (trailGot == TRAIL_LEN && trailMissed == 0) {
+        int[] t = trails.get(o.trail);
+        if (t != null) {
+            t[0]++;
+            popText = "+" + FLOWER_PTS + "   " + t[0] + "/" + TRAIL_LEN;
+            if (t[0] + t[1] >= TRAIL_LEN) trails.remove(o.trail);
+            if (t[0] == TRAIL_LEN) {
                 bonus += BOUQUET_PTS;
                 popText = Holidays.TRAIL[holiday] + "  +" + (FLOWER_PTS + BOUQUET_PTS);
                 popColor = 0xFFFFD45A;
