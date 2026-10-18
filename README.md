@@ -45,4 +45,6 @@ The build also produces **HorizonRun.aab** (the file Play wants) once these repo
 | `UPLOAD_KEYSTORE_PASSWORD` | the password in `horizonrun-upload-key-INFO.txt` |
 | `UPLOAD_KEY_ALIAS` | `upload` |
 
+Privacy policy (for the Play listing): **https://randaladams.github.io/horizon-run/privacy.html** (source in `docs/`).
+
 Ads currently use Google's **test** ids. Before release, create an AdMob app and replace the ids in `Ads.java` (rewarded + interstitial) and the `APPLICATION_ID` in `AndroidManifest.xml`.
