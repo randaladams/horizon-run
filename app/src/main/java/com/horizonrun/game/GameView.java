@@ -197,7 +197,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     // ---- sound: a short synthesized chime (no audio files needed) ------------------
     private AudioTrack chime;
     private SoundPool sfx;
-    private int sFlower, sBouquet, sGolden, sJump, sSnail, sCrash, sRevive, sChime;
+    private int sFlower, sBouquet, sGolden, sJump, sSnail, sCrash, sRevive, sChime, sStep, sWind;
+    private int windStream;            // looping wind while running (0 = not playing)
+    private float windVol, windTimer, stepPhase;
     private boolean soundOn = true;
     private volatile boolean toggleSound;
 
@@ -386,6 +388,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     public void pause() {
         resumed = false;
+        if (sfx != null && windStream != 0) {
+            try { sfx.stop(windStream); } catch (Exception ignored) { }
+            windStream = 0;
+            windVol = 0f;
+        }
         if (state == RUN) paused = true;
         if (sensorManager != null) sensorManager.unregisterListener(this);
         touching = false;
@@ -511,7 +518,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     return true;
                 }
                 if (state == SCORES) {
-                    if (inScoresTitle(e)) titleDownAt = e.getEventTime();
+                    if (BuildConfig.ALLOW_TEST_UNLOCK && inScoresTitle(e)) titleDownAt = e.getEventTime();
                     if (BuildConfig.ALLOW_TEST_UNLOCK && inScoresBest(e)) bestDownAt = e.getEventTime();
                     if (inRect(e, howBtnL(), howBtnT(), howBtnR(), howBtnB())) backReq = true;
                     else if (inRect(e, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB())) resetTap = true;
@@ -574,7 +581,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 break;
             case MotionEvent.ACTION_UP:
                 // hidden theme preview: hold the scoreboard title for a moment
-                if (state == SCORES && titleDownAt > 0 && inScoresTitle(e)
+                // hidden theme preview (test builds only - the full version has a real picker)
+                if (BuildConfig.ALLOW_TEST_UNLOCK && state == SCORES && titleDownAt > 0 && inScoresTitle(e)
                         && e.getEventTime() - titleDownAt > 600) cycleHoliday = true;
                 // hidden free/full switch for testing: hold "BEST" on the scoreboard
                 if (BuildConfig.ALLOW_TEST_UNLOCK && state == SCORES && bestDownAt > 0 && inScoresBest(e)
@@ -641,6 +649,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 jumpV = 0f;
                 airborne = false;
                 shake = Math.max(shake, 0.12f);   // little landing bump
+                play(sStep, 1f, 0.88f);           // a slightly heavier landing step
+                stepPhase = 0f;
             }
         }
     }
@@ -921,6 +931,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             refreshHoliday();
         }
         updateWeather(dt);
+        updateRunSound(dt);
         if (privacyReq) {
             privacyReq = false;
             if (ads != null) ads.showPrivacyOptions();
@@ -1329,7 +1340,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         soundOn = prefs.getBoolean("sound", true);
         try {
             sfx = new SoundPool.Builder()
-                    .setMaxStreams(6)
+                    .setMaxStreams(8)
                     .setAudioAttributes(new AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_GAME)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -1344,6 +1355,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             sCrash = sfx.load(ctx, R.raw.sfx_crash, 1);
             sRevive = sfx.load(ctx, R.raw.sfx_revive, 1);
             sChime = sfx.load(ctx, R.raw.sfx_chime, 1);
+            sStep = sfx.load(ctx, R.raw.sfx_step, 1);
+            sWind = sfx.load(ctx, R.raw.sfx_wind, 1);
         } catch (Exception e) {
             sfx = null;
         }
@@ -1354,6 +1367,41 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private void play(int id, float vol, float rate) {
         if (!soundOn || sfx == null || id == 0) return;
         try { sfx.play(id, vol, vol, 1, 0, rate); } catch (Exception ignored) { }
+    }
+
+    /**
+     * Very soft running sound: footfalls timed to your stride (faster as you speed up,
+     * none while in the air) and a wind loop that rises and brightens with speed.
+     */
+    private void updateRunSound(float dt) {
+        if (sfx == null) return;
+        boolean active = soundOn && ((state == RUN && !paused && !waitingForAd) || state == TUTORIAL);
+        float sp = clamp((speed - 10f) / 50f, 0f, 1f);
+
+        if (active && !airborne) {
+            stepPhase += (2.4f + 2.0f * sp) * dt;          // 2.4 to 4.4 steps a second
+            if (stepPhase >= 1f) {
+                stepPhase -= 1f;
+                play(sStep, 0.75f + 0.25f * rnd.nextFloat(), 0.92f + 0.16f * rnd.nextFloat());
+            }
+        }
+
+        float target = active ? 0.25f + 0.75f * sp : 0f;
+        windVol += (target - windVol) * Math.min(1f, dt * 2f);
+        windTimer -= dt;
+        if (windTimer > 0f) return;
+        windTimer = 0.1f;
+        try {
+            if (windStream == 0 && windVol > 0.02f && active) {
+                windStream = sfx.play(sWind, windVol, windVol, 0, -1, 0.85f + 0.4f * sp);
+            } else if (windStream != 0 && (windVol < 0.01f || !soundOn)) {
+                sfx.stop(windStream);
+                windStream = 0;
+            } else if (windStream != 0) {
+                sfx.setVolume(windStream, windVol, windVol);
+                sfx.setRate(windStream, 0.85f + 0.4f * sp);
+            }
+        } catch (Exception ignored) { }
     }
 
     private void playChime() {
@@ -3497,6 +3545,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText(mmss(r[3]), colX[4], ry, txt);
         }
         txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(H * 0.026f);
+        txt.setColor(0x99FFFFFF);
+        txt.setTextSize(H * 0.022f);
+        txt.setColor(0x88FFFFFF);
+        c.drawText("Horizon Run  v" + BuildConfig.VERSION_NAME
+                        + (BuildConfig.ALLOW_TEST_UNLOCK ? "   (test build)" : ""),
+                cx, bottom + H * 0.024f, txt);
         txt.setTextSize(H * 0.026f);
         txt.setColor(0x99FFFFFF);
         c.drawText("\u2605 new high score     \u25B6 continued after an ad     gold = your best",
