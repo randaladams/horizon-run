@@ -441,9 +441,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
     }
 
-    @Override
     private float dtSmooth = 1f / 60f;
 
+    @Override
     public void run() {
         long last = System.nanoTime();
         while (running) {
