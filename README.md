@@ -55,4 +55,4 @@ The build also produces **HorizonRun.aab** (the file Play wants) once these repo
 
 Privacy policy (for the Play listing): **https://randaladams.github.io/horizon-run/privacy.html** (source in `docs/`).
 
-Ads currently use Google's **test** ids. Before release, create an AdMob app and replace the ids in `Ads.java` (rewarded + interstitial) and the `APPLICATION_ID` in `AndroidManifest.xml`.
+**Ads:** the Play Store bundle uses the real AdMob ids (app, rewarded, interstitial, set in `app/build.gradle`); the side-loaded test APK always uses Google's test ids, so testing on your own phone never loads real ads.

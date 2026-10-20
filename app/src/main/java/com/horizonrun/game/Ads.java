@@ -26,15 +26,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - Rewarded ad: "watch an ad to keep running" after a crash, once per run.
  * - Interstitial: shown between games, after every 4 finished games.
  *
- * The IDs below are Google's public TEST ids, which always show test ads.
- * Before publishing, replace them with the ids from your own AdMob account
- * (and the APPLICATION_ID in AndroidManifest.xml).
+ * Ad unit ids come from BuildConfig: the Play Store bundle gets the real AdMob ids,
+ * the side-loaded test APK gets Google's public test ids (which always show test ads).
  */
 public class Ads {
 
-    // ---- replace these with your own AdMob ids before publishing -------------------
-    static final String REWARDED_ID = "ca-app-pub-3940256099942544/5224354917";
-    static final String INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712";
+    // Real ids in the Play Store bundle, Google test ids in the test APK (see app/build.gradle).
+    static final String REWARDED_ID = BuildConfig.ADMOB_REWARDED;
+    static final String INTERSTITIAL_ID = BuildConfig.ADMOB_INTERSTITIAL;
 
     /** What the game is told when a full-screen ad closes. */
     public interface Listener {

@@ -23,6 +23,19 @@ android {
         // The hidden free/full test switch only exists in the side-loaded test APK,
         // never in the Play Store bundle (which is the one signed with the upload key).
         buildConfigField "boolean", "ALLOW_TEST_UNLOCK", uploadStore ? "false" : "true"
+
+        // AdMob: the Play Store bundle uses the real ids; the side-loaded test APK always
+        // uses Google's public test ids, so the developer's phone can never load a real ad.
+        def realAds = uploadStore != null
+        manifestPlaceholders = [admobAppId: realAds
+                ? "ca-app-pub-7909301840077799~4928575733"
+                : "ca-app-pub-3940256099942544~3347511713"]
+        buildConfigField "String", "ADMOB_REWARDED", realAds
+                ? '"ca-app-pub-7909301840077799/1857805248"'
+                : '"ca-app-pub-3940256099942544/5224354917"'
+        buildConfigField "String", "ADMOB_INTERSTITIAL", realAds
+                ? '"ca-app-pub-7909301840077799/5821100980"'
+                : '"ca-app-pub-3940256099942544/1033173712"'
     }
 
     buildFeatures {
