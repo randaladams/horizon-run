@@ -198,8 +198,12 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private AudioTrack chime;
     private SoundPool sfx;
     private int sFlower, sBouquet, sGolden, sJump, sSnail, sCrash, sRevive, sChime, sStep, sWind;
-    private int windStream;            // looping wind while running (0 = not playing)
-    private float windVol, windTimer, stepPhase;
+    private int windStream;            // looping wind while running (audio thread only)
+    private float windVol, windTimer, stepPhase, windSent;
+    // All SoundPool calls happen on this thread so the game loop never waits on audio.
+    private android.os.HandlerThread audioThread;
+    private android.os.Handler audio;
+    private static final int A_PLAY = 1, A_WIND = 2, A_RELEASE = 3;
     private boolean soundOn = true;
     private volatile boolean toggleSound;
 
@@ -388,11 +392,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     public void pause() {
         resumed = false;
-        if (sfx != null && windStream != 0) {
-            try { sfx.stop(windStream); } catch (Exception ignored) { }
-            windStream = 0;
-            windVol = 0f;
-        }
+        windVol = 0f;
+        sendWind(0f);                       // stop the wind while we're in the background
         if (state == RUN) paused = true;
         if (sensorManager != null) sensorManager.unregisterListener(this);
         touching = false;
@@ -441,13 +442,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     @Override
+    private float dtSmooth = 1f / 60f;
+
     public void run() {
         long last = System.nanoTime();
         while (running) {
             long now = System.nanoTime();
-            float dt = Math.min((now - last) / 1e9f, 0.05f);
+            float raw = Math.min((now - last) / 1e9f, 0.05f);
             last = now;
-            update(dt);
+            // Smooth the time step a little so one slow frame doesn't make the next
+            // movement visibly jump; big changes (resume, real slowdowns) pass straight through.
+            dtSmooth = Math.abs(raw - dtSmooth) > 0.02f ? raw : dtSmooth + (raw - dtSmooth) * 0.3f;
+            update(dtSmooth);
 
             Canvas c = null;
             try {
@@ -1112,9 +1118,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     public void release() {
-        if (sfx != null) {
-            try { sfx.release(); } catch (Exception ignored) { }
-            sfx = null;
+        if (audio != null) {
+            audio.obtainMessage(A_RELEASE).sendToTarget();
+            audio = null;
         }
         if (chime != null) {
             try { chime.release(); } catch (Exception ignored) { }
@@ -1357,16 +1363,60 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             sChime = sfx.load(ctx, R.raw.sfx_chime, 1);
             sStep = sfx.load(ctx, R.raw.sfx_step, 1);
             sWind = sfx.load(ctx, R.raw.sfx_wind, 1);
+            audioThread = new android.os.HandlerThread("audio", android.os.Process.THREAD_PRIORITY_AUDIO);
+            audioThread.start();
+            audio = new android.os.Handler(audioThread.getLooper(), this::handleAudio);
         } catch (Exception e) {
             sfx = null;
         }
     }
 
+    /** Runs on the audio thread. Messages are pooled, so sending one creates no garbage. */
+    private boolean handleAudio(android.os.Message m) {
+        SoundPool pool = sfx;
+        if (pool == null) return true;
+        try {
+            switch (m.what) {
+                case A_PLAY: {
+                    float vol = (m.arg2 >>> 16) / 1000f, rate = (m.arg2 & 0xFFFF) / 1000f;
+                    pool.play(m.arg1, vol, vol, 1, 0, rate);
+                    break;
+                }
+                case A_WIND: {
+                    float v = m.arg1 / 1000f;
+                    if (v <= 0.005f) {
+                        if (windStream != 0) { pool.stop(windStream); windStream = 0; }
+                    } else if (windStream == 0) {
+                        windStream = pool.play(sWind, v, v, 0, -1, 1f);
+                    } else {
+                        pool.setVolume(windStream, v, v);
+                    }
+                    break;
+                }
+                case A_RELEASE:
+                    pool.release();
+                    sfx = null;
+                    if (audioThread != null) audioThread.quitSafely();
+                    break;
+                default:
+                    break;
+            }
+        } catch (Exception ignored) { }
+        return true;
+    }
+
+    private void sendWind(float v) {
+        if (audio == null) return;
+        audio.obtainMessage(A_WIND, (int) (clamp(v, 0f, 1f) * 1000f), 0).sendToTarget();
+        windSent = v;
+    }
+
     private void play(int id, float vol) { play(id, vol, 1f); }
 
     private void play(int id, float vol, float rate) {
-        if (!soundOn || sfx == null || id == 0) return;
-        try { sfx.play(id, vol, vol, 1, 0, rate); } catch (Exception ignored) { }
+        if (!soundOn || audio == null || id == 0) return;
+        int packed = ((int) (clamp(vol, 0f, 1f) * 1000f) << 16) | (int) (clamp(rate, 0.5f, 2f) * 1000f);
+        audio.obtainMessage(A_PLAY, id, packed).sendToTarget();
     }
 
     /**
@@ -1386,22 +1436,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             }
         }
 
+        // wind: volume only (no pitch changes), sent a few times a second and only if it moved
         float target = active ? 0.25f + 0.75f * sp : 0f;
         windVol += (target - windVol) * Math.min(1f, dt * 2f);
+        if (windVol < 0.01f) windVol = target > 0f ? windVol : 0f;
         windTimer -= dt;
         if (windTimer > 0f) return;
-        windTimer = 0.1f;
-        try {
-            if (windStream == 0 && windVol > 0.02f && active) {
-                windStream = sfx.play(sWind, windVol, windVol, 0, -1, 0.85f + 0.4f * sp);
-            } else if (windStream != 0 && (windVol < 0.01f || !soundOn)) {
-                sfx.stop(windStream);
-                windStream = 0;
-            } else if (windStream != 0) {
-                sfx.setVolume(windStream, windVol, windVol);
-                sfx.setRate(windStream, 0.85f + 0.4f * sp);
-            }
-        } catch (Exception ignored) { }
+        windTimer = 0.25f;
+        if (Math.abs(windVol - windSent) > 0.03f || (windVol == 0f && windSent != 0f)) sendWind(windVol);
     }
 
     private void playChime() {
@@ -1580,7 +1622,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 // keep the grass field around the player when steering far sideways
                 if (Math.abs(o.x - px) > 38f) gone = true;
             }
-            if (gone) objs.remove(i);
+            if (gone) {
+                objs.remove(i);
+                if (o.decor() && decorPool.size() < 400) decorPool.add(o);   // reuse it later
+            }
         }
         // in the menu, keep the scene populated
         if (state == MENU || state == SCORES || state == STATS || state == UPGRADE) {
@@ -1762,8 +1807,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         return o;
     }
 
+    private final ArrayList<Obj> decorPool = new ArrayList<>();
+
     private void spawnDecor(float z) {
-        Obj o = new Obj();
+        Obj o = decorPool.isEmpty() ? new Obj() : decorPool.remove(decorPool.size() - 1);
+        o.judged = false;
+        o.vx = 0f;
+        o.trail = -1;
         o.type = rnd.nextFloat() < 0.18f ? FLOWER : GRASS;
         o.x = px + (rnd.nextFloat() * 2f - 1f) * 36f;
         o.z = z - rnd.nextFloat();
@@ -1899,7 +1949,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     /** Draws ground stripes and objects far-to-near so nearer things cover farther ones. */
     private void drawScene(Canvas c) {
         drawList.clear();
-        for (int i = 0; i < objs.size(); i++) {
+        for (int i = objs.size() - 1; i >= 0; i--) {      // newest (farthest) first
             Obj o = objs.get(i);
             if (o.z <= NEAR_Z) continue;
             if (o.decor() && o.z > 55f) continue;
@@ -2266,11 +2316,22 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         c.drawOval(rect, p);
     }
 
+    private static final int[] GRASS_COLS = {0xFF3D7D32, 0xFF467F2E, 0xFF35702C, 0xFF4C8A34};
+    private static final int[] TINY_FLOWER_COLS = {0xFFFFE15A, 0xFFFFFFFF, 0xFFE86AA6, 0xFFB98CFF};
+    private static final int[] POPPER_CONFETTI = {0xFFFFD45A, 0xFFFF5FA2, 0xFF3FC1FF, 0xFF8CFF6A, 0xFFFFFFFF};
+    private static final int[] FIREWORK_COLS = {0xFFFF4040, 0xFFFFFFFF, 0xFF4A8CFF, 0xFFFFD45A};
+    private static final int[] TURKEY_FEATHERS = {0xFFFFCF3A, 0xFFE8A21E, 0xFFFFE07A, 0xFFD48A1E};
+    private static final int[] TREE_GREENS = {0xFF1E6B34, 0xFF268040, 0xFF2E944A};
+    private static final int[] ORNAMENTS = {0xFFE53935, 0xFF4A8CFF, 0xFFFFD45A, 0xFFFF6FD8};
+    private static final float[][] TREE_TIERS = {{0.42f, 0.32f, -0.05f}, {0.33f, 0.08f, -0.28f}, {0.24f, -0.15f, -0.5f}};
+    private static final float[][] ORNAMENT_POS = {{-0.2f, 0.22f}, {0.15f, 0.2f}, {-0.05f, 0.05f},
+            {0.14f, -0.06f}, {-0.12f, -0.13f}, {0.04f, -0.3f}};
+
     private void drawGrass(Canvas c, Obj o) {
         if (snowy()) { drawSnowBump(c, o); return; }
         if (leafy()) { drawFallenLeaf(c, o); return; }
         float k = o.size;
-        int[] cols = wintry() ? DRY_GRASS : new int[]{0xFF3D7D32, 0xFF467F2E, 0xFF35702C, 0xFF4C8A34};
+        int[] cols = wintry() ? DRY_GRASS : GRASS_COLS;
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeCap(Paint.Cap.ROUND);
         p.setStrokeWidth(0.04f * k);
@@ -2284,7 +2345,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private void drawFlower(Canvas c, Obj o) {
         if (snowy() || wintry()) return;
         if (leafy()) { drawFallenLeaf(c, o); return; }
-        int[] cols = {0xFFFFE15A, 0xFFFFFFFF, 0xFFE86AA6, 0xFFB98CFF};
+        int[] cols = TINY_FLOWER_COLS;
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(0.03f);
         p.setColor(fog(0xFF3D7D32));
@@ -2395,7 +2456,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         if (state == RUN || state == CRASH) {
             txt.setTextSize(H * 0.075f);
-            c.drawText(score() + " m", pad, pad + H * 0.06f, txt);
+            c.drawText(hudScore(), pad, pad + H * 0.06f, txt);
             if (zenRun) {
                 txt.setTextAlign(Paint.Align.CENTER);
                 txt.setTextSize(H * 0.032f);
@@ -2406,14 +2467,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             }
             txt.setTextSize(H * 0.035f);
             txt.setColor(0xCCFFFFFF);
-            c.drawText("BEST " + best, pad, pad + H * 0.11f, txt);
+            c.drawText(hudBest(), pad, pad + H * 0.11f, txt);
             txt.setColor(0xFFFF9FD0);
-            c.drawText("\u273F " + flowersRun, pad, pad + H * 0.155f, txt);
+            c.drawText(hudItems(), pad, pad + H * 0.155f, txt);
             txt.setColor(Color.WHITE);
 
             txt.setTextAlign(Paint.Align.RIGHT);
             txt.setTextSize(H * 0.06f);
-            c.drawText(Math.round(speed * 3.6f) + " km/h", W - pad, pad + H * 0.055f, txt);
+            c.drawText(hudSpeed(), W - pad, pad + H * 0.055f, txt);
 
             // sprint meter
             float bw = W * 0.18f, bh = H * 0.014f;
@@ -3585,6 +3646,22 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
     }
 
+    // cached HUD text: rebuilt only when the number changes
+    private int hsVal = Integer.MIN_VALUE, hbVal = Integer.MIN_VALUE, hiVal = Integer.MIN_VALUE, hkVal = Integer.MIN_VALUE;
+    private String hsStr = "", hbStr = "", hiStr = "", hkStr = "";
+
+    private String hudScore() { int v = score(); if (v != hsVal) { hsVal = v; hsStr = v + " m"; } return hsStr; }
+    private String hudBest() { if (best != hbVal) { hbVal = best; hbStr = "BEST " + best; } return hbStr; }
+    private String hudItems() { if (flowersRun != hiVal) { hiVal = flowersRun; hiStr = "\u273F " + flowersRun; } return hiStr; }
+    private String hudSpeed() {
+        int v = Math.round(speed * 3.6f);
+        if (v != hkVal) { hkVal = v; hkStr = v + " km/h"; }
+        return hkStr;
+    }
+
+    private LinearGradient curtain;
+    private final android.graphics.Matrix curtainM = new android.graphics.Matrix();
+
     /** A glowing gold line across the ground at your best score, with posts and a banner. */
     private void drawBestLine(Canvas c, Obj o) {
         float z = o.z;
@@ -3612,10 +3689,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         // a soft curtain of light rising from the line
         float s = f / z;
         float gy = projY(0f, 0f, z), ty = projY(0f, 2.2f, z);
-        p.setShader(new LinearGradient(0, gy, 0, ty,
-                Color.argb((int) (90 + 50 * pulse), 255, 215, 90), 0x00FFD45A, Shader.TileMode.CLAMP));
+        if (curtain == null) {
+            curtain = new LinearGradient(0, 1f, 0, 0f, 0xFFFFD75A, 0x00FFD45A, Shader.TileMode.CLAMP);
+        }
+        curtainM.setScale(1f, gy - ty);
+        curtainM.postTranslate(0f, ty);
+        curtain.setLocalMatrix(curtainM);
+        p.setShader(curtain);
+        p.setColor(Color.WHITE);
+        p.setAlpha((int) (90 + 50 * pulse));
         c.drawRect(-W * 0.2f, ty, W * 1.2f, gy, p);
         p.setShader(null);
+        p.setAlpha(255);
 
         // glowing posts every 4 m
         float x0 = (float) Math.floor((px - 60f) / 4f) * 4f;
@@ -4035,7 +4120,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         stroke(0xFFFFD45A, 0.05f);
         c.drawLine(-0.16f, 0.1f, 0.16f, 0.1f, p);
         c.drawLine(-0.21f, -0.05f, 0.21f, -0.05f, p);
-        int[] cc = {0xFFFFD45A, 0xFFFF5FA2, 0xFF3FC1FF, 0xFF8CFF6A, 0xFFFFFFFF};
+        int[] cc = POPPER_CONFETTI;
         p.setStyle(Paint.Style.FILL);
         for (int i = 0; i < 9; i++) {       // confetti bursting out
             float ph = (animTime * 0.9f + i * 0.11f) % 1f;
@@ -4171,7 +4256,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void drawFirework(Canvas c) {
-        int[] cols = {0xFFFF4040, 0xFFFFFFFF, 0xFF4A8CFF, 0xFFFFD45A};
+        int[] cols = FIREWORK_COLS;
         float ph = (animTime * 0.8f) % 1f;
         float r = 0.15f + 0.45f * ph;
         for (int i = 0; i < 14; i++) {
@@ -4255,7 +4340,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void drawTurkey(Canvas c) {
-        int[] feathers = {0xFFFFCF3A, 0xFFE8A21E, 0xFFFFE07A, 0xFFD48A1E};
+        int[] feathers = TURKEY_FEATHERS;
         for (int i = 0; i < 7; i++) {        // fanned tail
             c.save();
             c.rotate(-72f + i * 24f, 0f, 0.1f);
@@ -4300,8 +4385,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private void drawXmasTree(Canvas c) {
         fill(0xFF6B4423);
         c.drawRect(-0.06f, 0.3f, 0.06f, 0.45f, p);
-        int[] g = {0xFF1E6B34, 0xFF268040, 0xFF2E944A};
-        float[][] tiers = {{0.42f, 0.32f, -0.05f}, {0.33f, 0.08f, -0.28f}, {0.24f, -0.15f, -0.5f}};
+        int[] g = TREE_GREENS;
+        float[][] tiers = TREE_TIERS;
         for (int i = 0; i < 3; i++) {
             path.reset();
             path.moveTo(-tiers[i][0], tiers[i][1]);
@@ -4311,8 +4396,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             fill(g[i]);
             c.drawPath(path, p);
         }
-        int[] orn = {0xFFE53935, 0xFF4A8CFF, 0xFFFFD45A, 0xFFFF6FD8};
-        float[][] pos = {{-0.2f, 0.22f}, {0.15f, 0.2f}, {-0.05f, 0.05f}, {0.14f, -0.06f}, {-0.12f, -0.13f}, {0.04f, -0.3f}};
+        int[] orn = ORNAMENTS;
+        float[][] pos = ORNAMENT_POS;
         for (int i = 0; i < pos.length; i++) {
             float tw = 0.5f + 0.5f * (float) Math.sin(animTime * 5f + i * 1.3f);
             p.setColor(fog(orn[i % orn.length]));
