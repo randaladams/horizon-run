@@ -53,6 +53,6 @@ The build also produces **HorizonRun.aab** (the file Play wants) once these repo
 | `UPLOAD_KEYSTORE_PASSWORD` | the password in `horizonrun-upload-key-INFO.txt` |
 | `UPLOAD_KEY_ALIAS` | `upload` |
 
-Privacy policy (for the Play listing): **https://randaladams.github.io/horizon-run/privacy.html** (source in `docs/`).
+Privacy policy (for the Play listing): **https://adamselite.com/apps/horizon-run/privacy/** (source in the randaladams.github.io repo; `docs/` here only redirects).
 
 **Ads:** the Play Store bundle uses the real AdMob ids (app, rewarded, interstitial, set in `app/build.gradle`); the side-loaded test APK always uses Google's test ids, so testing on your own phone never loads real ads.

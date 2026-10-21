@@ -66,13 +66,13 @@ Copy-paste text and the answers for Play Console's setup forms.
 | Phone screenshots | take on your phone | 2–8 landscape screenshots. Good ones: a run with a flower trail, a high jump over a bear, a holiday theme (use the Scores-title preview), dark mode, the crash screen with a funny line, the scoreboard |
 
 **Category:** Games → **Arcade**  ·  **Tags:** Arcade, Running, Casual, Action, Offline
-**Contact email:** your support address  ·  **Privacy policy:** https://randaladams.github.io/horizon-run/privacy.html
+**Contact email:** your support address  ·  **Privacy policy:** https://adamselite.com/apps/horizon-run/privacy/
 
 ## App content (Policy → App content)
 
 | Section | Answer |
 |---|---|
-| Privacy policy | https://randaladams.github.io/horizon-run/privacy.html |
+| Privacy policy | https://adamselite.com/apps/horizon-run/privacy/ |
 | Ads | **Yes, my app contains ads** |
 | App access | **All functionality is available without special access** |
 | Content rating | Category **Game**. Violence: none / cartoon none (you crash into trees, no harm shown). No fear, sex, language, drugs, gambling. Users can't interact or share content. Does not share location. Has in-app purchases: Yes. Expected result: **Everyone / PEGI 3** |
