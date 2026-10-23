@@ -42,6 +42,25 @@ android {
         buildConfig true
     }
 
+    // Two builds of the same game:
+    //  - phone:  the Google Play version (tilt + touch, AdMob ads, Play Billing upgrade)
+    //  - firetv: Amazon Fire TV (Fire OS 6+). Played with the remote, full version
+    //            unlocked, no Google ads or billing (Fire TV has no Google Play services).
+    flavorDimensions = ["device"]
+    productFlavors {
+        phone {
+            dimension "device"
+            buildConfigField "boolean", "FIRE_TV", "false"
+        }
+        firetv {
+            dimension "device"
+            minSdk 25                      // Fire OS 6 (Fire TV Stick 4K, 1st gen) is Android 7.1
+            versionNameSuffix "-firetv"
+            buildConfigField "boolean", "FIRE_TV", "true"
+            buildConfigField "boolean", "ALLOW_TEST_UNLOCK", "false"
+        }
+    }
+
     signingConfigs {
         shared {
             storeFile file('horizonrun.keystore')
@@ -69,14 +88,24 @@ android {
         }
     }
 
+    lint {
+        // Calling something newer than the device's Android version crashes there (Fire OS 6
+        // is Android 7.1), so make that a build failure instead of a warning.
+        fatal 'NewApi'
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+        // java.time (holiday dates) only arrived in Android 8; this backports it for Fire OS 6.
+        coreLibraryDesugaringEnabled true
     }
 }
 
 dependencies {
-    implementation 'com.google.android.gms:play-services-ads:23.6.0'
-    implementation 'com.google.android.ump:user-messaging-platform:3.1.0'
-    implementation 'com.android.billingclient:billing:8.0.0'
+    // Google ads and billing: phone build only.
+    phoneImplementation 'com.google.android.gms:play-services-ads:23.6.0'
+    phoneImplementation 'com.google.android.ump:user-messaging-platform:3.1.0'
+    phoneImplementation 'com.android.billingclient:billing:8.0.0'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }

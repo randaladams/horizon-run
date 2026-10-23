@@ -3,6 +3,9 @@ package com.horizonrun.game;
 import android.app.Activity;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.InputDevice;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -50,6 +53,25 @@ public class MainActivity extends Activity {
     protected void onPause() {
         gameView.pause();
         super.onPause();
+    }
+
+    /** Fire TV remote, keyboards and game controllers. BACK still goes to onBackPressed. */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (gameView != null && event.getKeyCode() != KeyEvent.KEYCODE_BACK
+                && gameView.onRemoteKey(event)) {
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (gameView != null && event.getAction() == MotionEvent.ACTION_MOVE
+                && (event.getSource() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+            gameView.onPadMotion(event);   // steering only; Android still turns the stick into arrows for menus
+        }
+        return super.dispatchGenericMotionEvent(event);
     }
 
     @SuppressWarnings("deprecation")

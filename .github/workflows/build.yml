@@ -2,7 +2,9 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    # fire-tv: lets the Fire TV build be tried before it's merged (only the Fire TV
+    # download is published from that branch; the phone release always comes from main)
+    branches: [main, fire-tv]
   workflow_dispatch:
 
 permissions:
@@ -21,18 +23,20 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
-      # APK for installing straight onto your phone (signed with the shared test key,
-      # so each build installs over the last one).
-      - name: Build test APK
+      # APKs for installing straight onto your phone and your Fire TV (signed with the
+      # shared test key, so each build installs over the last one).
+      - name: Build test APKs (phone + Fire TV)
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
-          cp app/build/outputs/apk/release/app-release.apk HorizonRun.apk
+          ./gradlew assemblePhoneRelease assembleFiretvRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/phone/release/app-phone-release.apk HorizonRun.apk
+          cp app/build/outputs/apk/firetv/release/app-firetv-release.apk HorizonRun-FireTV.apk
 
       # App bundle for the Play Store, signed with your private upload key.
       # Runs only once the UPLOAD_KEYSTORE_BASE64 and UPLOAD_KEYSTORE_PASSWORD
       # repository secrets exist.
       - name: Build Play Store bundle
+        if: github.ref == 'refs/heads/main'
         env:
           UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
           UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
@@ -44,8 +48,8 @@ jobs:
           fi
           echo "$UPLOAD_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
           export UPLOAD_KEYSTORE_FILE="$RUNNER_TEMP/upload.jks"
-          ./gradlew bundleRelease --no-daemon --stacktrace
-          cp app/build/outputs/bundle/release/app-release.aab HorizonRun.aab
+          ./gradlew bundlePhoneRelease --no-daemon --stacktrace
+          cp app/build/outputs/bundle/phoneRelease/app-phone-release.aab HorizonRun.aab
           rm -f "$RUNNER_TEMP/upload.jks"
 
       - uses: actions/upload-artifact@v6
@@ -53,10 +57,12 @@ jobs:
           name: HorizonRun
           path: |
             HorizonRun.apk
+            HorizonRun-FireTV.apk
             HorizonRun.aab
           if-no-files-found: ignore
 
       - name: Publish to the "latest" release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -68,3 +74,17 @@ jobs:
             --title "Horizon Run — build ${{ github.run_number }}" \
             --notes "Open this page on your Android phone and tap HorizonRun.apk to download and install. HorizonRun.aab (when present) is the Play Store upload." \
             --latest
+
+      # The Fire TV APK gets its own page with a fixed download link
+      # (.../releases/download/firetv/HorizonRun-FireTV.apk) to type into the
+      # Downloader app on the Fire TV.
+      - name: Publish to the "firetv" release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete firetv --yes --cleanup-tag || true
+          gh release create firetv HorizonRun-FireTV.apk \
+            --target "${{ github.sha }}" \
+            --title "Horizon Run for Fire TV — build ${{ github.run_number }} (${{ github.ref_name }})" \
+            --notes "Fire TV version (Fire OS 6 or newer: Fire TV Stick 4K, 4K Max, Cube...). Install with the Downloader app on the Fire TV, or adb from a computer. Not for the Vega OS sticks (Fire TV Stick 4K Select, 2026 Fire TV Stick HD)." \
+            --latest=false

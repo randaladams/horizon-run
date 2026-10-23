@@ -33,15 +33,42 @@ One-time upgrade through Google Play (product id `full_version`); scores are kep
 
 Every push to `main` rebuilds the APK automatically (GitHub Actions) and replaces the file on that release page. New builds install over the old one, keeping your best score.
 
+## Fire TV version
+
+A second build of the same game for Amazon Fire TV devices running **Fire OS 6 or newer** (Fire TV Stick 4K, 4K Max, Cube, and older Fire TV sticks). It is the full version with no ads, played with the remote:
+
+| Remote | In a run | On menus |
+|---|---|---|
+| **◀ ▶** | steer (hold to turn harder) | move the gold outline |
+| **▲ / ▼** | hold **▲** to sprint | move the gold outline |
+| **SELECT** (centre button) | jump; press again in the air for a high jump | press the outlined button |
+| **PLAY/PAUSE** or **MENU** | pause / resume | — |
+| **BACK** | pause | go back / leave |
+
+A game controller works too (left stick steers, A jumps, R1 or stick-up sprints).
+
+It doesn't run on the newest **Vega OS** sticks (Fire TV Stick 4K Select, 2026 Fire TV Stick HD), which don't run Android apps.
+
+### Install on a Fire TV
+
+1. On the Fire TV: **Settings → My Fire TV → Developer Options** (if it's missing, open **About**, highlight your device name and press SELECT 7 times). Turn on **Apps from Unknown Sources** (newer Fire OS: **Install unknown apps → Downloader**).
+2. Install the free **Downloader** app from the Fire TV app store.
+3. In Downloader, enter **`https://github.com/randaladams/horizon-run/releases/download/firetv/HorizonRun-FireTV.apk`** and choose **Install**.
+4. Horizon Run appears under **Your Apps & Channels**.
+
+Every push to `main` rebuilds it (GitHub Actions) and replaces the file on the [firetv release page](https://github.com/randaladams/horizon-run/releases/tag/firetv). New builds install over the old one, keeping your scores.
+
+From a computer instead: enable **ADB debugging** in Developer Options, then `adb connect <fire-tv-ip>` and `adb install -r HorizonRun-FireTV.apk`.
+
 ## Building locally
 
 Requires the Android SDK (API 35) and JDK 17:
 
 ```
-./gradlew assembleRelease
+./gradlew assemblePhoneRelease assembleFiretvRelease
 ```
 
-The APK lands in `app/build/outputs/apk/release/`.
+The APKs land in `app/build/outputs/apk/phone/release/` and `app/build/outputs/apk/firetv/release/`.
 
 ## Publishing to Google Play
 
