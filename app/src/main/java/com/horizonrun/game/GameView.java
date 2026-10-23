@@ -1957,6 +1957,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private int score() { return (int) distance + bonus; }
 
+    private Object probe() { return android.os.VibrationEffect.createOneShot(1, 1); }
+
     /** Sprinting: a finger on the right half of the screen, or UP held on a remote/controller. */
     private boolean sprintHeld() { return touching || keyUp || keySprint || padUp; }
 
