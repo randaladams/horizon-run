@@ -88,6 +88,12 @@ android {
         }
     }
 
+    lint {
+        // Calling something newer than the device's Android version crashes there (Fire OS 6
+        // is Android 7.1), so make that a build failure instead of a warning.
+        fatal 'NewApi'
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

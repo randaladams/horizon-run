@@ -484,10 +484,25 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             dtSmooth = Math.abs(raw - dtSmooth) > 0.02f ? raw : dtSmooth + (raw - dtSmooth) * 0.3f;
             update(dtSmooth);
 
+            // GPU-drawn canvas. SurfaceHolder only offers it from Android 8; on Android 7
+            // (Fire OS 6) the Surface itself does, and must then also be the one to post it.
             Canvas c = null;
+            Surface viaSurface = null;
             try {
-                c = holder.lockHardwareCanvas();
+                if (Build.VERSION.SDK_INT >= 26) {
+                    c = holder.lockHardwareCanvas();
+                } else {
+                    Surface s = holder.getSurface();
+                    if (s != null && s.isValid()) {
+                        c = s.lockHardwareCanvas();
+                        viaSurface = s;
+                    }
+                }
             } catch (Exception e) {
+                c = null;
+                viaSurface = null;
+            }
+            if (c == null) {
                 try { c = holder.lockCanvas(); } catch (Exception ignored) { }
             }
             if (c == null) {
@@ -497,7 +512,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             try {
                 render(c);
             } finally {
-                try { holder.unlockCanvasAndPost(c); } catch (Exception ignored) { }
+                try {
+                    if (viaSurface != null) viaSurface.unlockCanvasAndPost(c);
+                    else holder.unlockCanvasAndPost(c);
+                } catch (Exception ignored) { }
             }
         }
     }
