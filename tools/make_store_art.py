@@ -101,4 +101,32 @@ sw = d.textlength(st, font=sub)
 d.text(((W-sw)/2+2, 238+2), st, font=sub, fill=(0,0,0,140))
 d.text(((W-sw)/2, 238), st, font=sub, fill=(255,233,160))
 fg.convert("RGB").save("feature-graphic-1024x500.png")
+
+# ---------------- 320 x 180 Fire TV home-screen banner ----------------
+# Drawn at 4x and scaled down. Title only: a tagline is unreadable at TV-tile size.
+W, H = 1280, 720
+tv = Image.new("RGBA", (W, H))
+sky(tv, (14,36,87), (47,100,184), (190,221,245), int(H*0.64))
+for i in range(50):
+    d = ImageDraw.Draw(tv); x, y = random.randint(0, W), random.randint(0, 220)
+    d.ellipse([x-2.5, y-2.5, x+2.5, y+2.5], fill=(255,255,255,120))
+ringed_planet(tv, 1130, 110, 56)
+planet(tv, W/2, H*1.25, H*0.78)
+glow_line(tv, W/2, H*1.25, H*0.78 + 14*H*0.78*0.035)
+d = ImageDraw.Draw(tv)
+for x, b, s in [(130, 640, 120), (260, 600, 80), (1040, 625, 125), (1160, 650, 90), (700, 545, 50), (580, 550, 40)]:
+    pine(d, x, b, s)
+rock(d, 860, 600, 60)
+rock(d, 400, 660, 80)
+for x in (500, 570, 640, 720, 790):
+    flower(tv, x, 640 - abs(x - 645) * 0.1, 14, (255,111,174))
+title = ImageFont.truetype(BOLD, 150)
+t = "HORIZON RUN"
+tw = d.textlength(t, font=title)
+shadow = Image.new("RGBA", tv.size, (0,0,0,0)); sd = ImageDraw.Draw(shadow)
+sd.text(((W-tw)/2+6, 215+9), t, font=title, fill=(0,0,0,160))
+tv.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(9)))
+d = ImageDraw.Draw(tv)
+d.text(((W-tw)/2, 215), t, font=title, fill=(255,255,255))
+tv.convert("RGB").resize((320, 180), Image.LANCZOS).save("tv-banner-320x180.png")
 print("ok")

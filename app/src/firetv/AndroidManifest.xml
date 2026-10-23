@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fire TV additions, merged on top of src/main/AndroidManifest.xml. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- A TV has no touchscreen or tilt sensor; the remote does the steering. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false"
+        tools:replace="android:required" />
+
+    <!-- Google Play services aren't on Fire TV and this build doesn't use them. -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+
+    <application android:banner="@drawable/tv_banner">
+        <activity
+            android:name=".MainActivity"
+            android:screenOrientation="landscape"
+            tools:replace="android:screenOrientation">
+            <!-- Shows the game on the Fire TV home screen ("Your Apps & Channels"). -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

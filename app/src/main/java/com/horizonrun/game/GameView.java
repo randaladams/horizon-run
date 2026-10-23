@@ -19,10 +19,11 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.app.UiModeManager;
 import android.os.Build;
-import android.os.VibrationEffect;
-import android.os.Vibrator;
+import android.util.DisplayMetrics;
 import android.view.Display;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -102,6 +103,22 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     private volatile boolean touching;
     private volatile boolean tapped;
+
+    // ---- TV remote / game controller ------------------------------------------------
+    // On Fire TV the remote does everything: LEFT/RIGHT steer, SELECT jumps (twice for a
+    // high jump), holding UP sprints, PLAY/PAUSE or MENU pauses, and on the menus the
+    // arrows move a highlight between the buttons and SELECT presses the highlighted one.
+    private final boolean tv;                      // show remote hints instead of touch hints
+    private volatile boolean keyLeft, keyRight, keyUp, keySprint;
+    private volatile float padX;                   // game controller stick, -1..1
+    private volatile boolean padUp;
+    private float keySteer;                        // ramps up while an arrow is held
+    private volatile boolean keyNav;               // a remote/keyboard was used on a menu
+    private volatile int focusAction = -1;         // the highlighted button (F_* below)
+    private static final int F_START = 1, F_HOW = 2, F_MODE = 3, F_PICK = 4, F_SCORES = 5,
+            F_EXIT = 6, F_DARK = 7, F_SOUND = 8, F_DLG_EXIT = 9, F_DLG_STAY = 10, F_DLG_UP = 11,
+            F_DONE = 12, F_CONTINUE = 13, F_BACK = 14, F_RESET = 15, F_STATS = 16, F_PRIVACY = 17,
+            F_BUY = 18, F_RESUME = 19, F_END = 20;
 
     private final SharedPreferences prefs;
     private final Random rnd = new Random();
@@ -266,7 +283,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             "July 4th", "Halloween", "Thanksgiving", "Christmas"};
 
     private boolean isFull() {
-        return fullOwned || (BuildConfig.ALLOW_TEST_UNLOCK && testFull);
+        return BuildConfig.FIRE_TV || fullOwned || (BuildConfig.ALLOW_TEST_UNLOCK && testFull);
     }
 
     // ---- high-score line -----------------------------------------------------------
@@ -333,6 +350,17 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         holder.addCallback(this);
         setFocusable(true);
 
+        UiModeManager ui = (UiModeManager) ctx.getSystemService(Context.UI_MODE_SERVICE);
+        tv = BuildConfig.FIRE_TV
+                || (ui != null && ui.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION);
+        if (tv) {
+            // Draw at 720p and let the TV scale it up: everything is sized from the screen
+            // height, and the Fire TV Stick's graphics chip keeps a smooth frame rate.
+            DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+            int dw = Math.max(dm.widthPixels, dm.heightPixels), dh = Math.min(dm.widthPixels, dm.heightPixels);
+            if (dh > 720) holder.setFixedSize(Math.round(dw * 720f / dh), 720);
+        }
+
         prefs = ctx.getSharedPreferences("horizon_run", Context.MODE_PRIVATE);
         best = prefs.getInt("best", 0);
         // Start in the phone's own light/dark setting until the player picks one.
@@ -397,6 +425,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         if (state == RUN) paused = true;
         if (sensorManager != null) sensorManager.unregisterListener(this);
         touching = false;
+        clearKeys();
         stopLoop();
     }
 
@@ -614,6 +643,237 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         return true;
     }
 
+    // ================================================================================
+    // TV remote, keyboard and game controller
+    // ================================================================================
+
+    private void clearKeys() {
+        keyLeft = keyRight = keyUp = keySprint = padUp = false;
+        padX = 0f;
+    }
+
+    /** True while the player is actually running (arrows steer, SELECT jumps). */
+    private boolean inPlay() {
+        return (state == RUN && !paused && !waitingForAd) || state == TUTORIAL;
+    }
+
+    /**
+     * Called by the activity for every key. Returns true if the game used it. BACK is left
+     * to the activity, which already pauses a run / leaves a screen / asks before exiting.
+     */
+    public boolean onRemoteKey(KeyEvent e) {
+        int action = e.getAction();
+        if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) return false;
+        boolean down = action == KeyEvent.ACTION_DOWN;
+        boolean first = down && e.getRepeatCount() == 0;
+        switch (e.getKeyCode()) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                keyLeft = down && inPlay();
+                if (down && !inPlay()) moveFocus(-1, 0);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                keyRight = down && inPlay();
+                if (down && !inPlay()) moveFocus(1, 0);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_UP:
+                keyUp = down && inPlay();
+                if (down && !inPlay()) moveFocus(0, -1);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                if (down && !inPlay()) moveFocus(0, 1);
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_BUTTON_R1:
+            case KeyEvent.KEYCODE_BUTTON_R2:
+                keySprint = down && inPlay();
+                return true;
+            case KeyEvent.KEYCODE_DPAD_CENTER:
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
+            case KeyEvent.KEYCODE_SPACE:
+            case KeyEvent.KEYCODE_BUTTON_A:
+                if (first) {
+                    if (inPlay()) {
+                        tapped = true;           // also moves the tutorial's info cards on
+                        jumpReq = true;
+                    } else {
+                        pressFocused();
+                    }
+                }
+                return true;
+            case KeyEvent.KEYCODE_MENU:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_BUTTON_START:
+                if (first && state == RUN && !waitingForAd) {
+                    if (paused) resumeReq = true;
+                    else pauseReq = true;
+                }
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** Game controller sticks: left stick / hat steers, pushing it up sprints. */
+    public void onPadMotion(android.view.MotionEvent e) {
+        float x = e.getAxisValue(MotionEvent.AXIS_X);
+        float hx = e.getAxisValue(MotionEvent.AXIS_HAT_X);
+        float y = e.getAxisValue(MotionEvent.AXIS_Y);
+        float hy = e.getAxisValue(MotionEvent.AXIS_HAT_Y);
+        float sx = Math.abs(hx) > Math.abs(x) ? hx : x;
+        padX = inPlay() && Math.abs(sx) > 0.2f ? clamp((sx - Math.signum(sx) * 0.2f) / 0.7f, -1f, 1f) : 0f;
+        padUp = inPlay() && Math.min(y, hy) < -0.5f;
+    }
+
+    /**
+     * The buttons on the current screen that the remote can highlight: {left, top, right,
+     * bottom, action, round}. The first one is where the highlight starts. These mirror the
+     * touch areas in onTouchEvent.
+     */
+    private ArrayList<float[]> focusTargets() {
+        ArrayList<float[]> t = new ArrayList<>();
+        if (waitingForAd) return t;
+        if (exitDialog && (state == MENU || state == CRASH)) {
+            t.add(new float[]{dlgStayL(), dlgBtnT(), dlgStayR(), dlgBtnB(), F_DLG_STAY, 0});
+            t.add(new float[]{dlgExitL(), dlgBtnT(), dlgExitR(), dlgBtnB(), F_DLG_EXIT, 0});
+            if (!isFull()) t.add(new float[]{exitUpL(), exitUpT(), exitUpR(), exitUpB(), F_DLG_UP, 0});
+            return t;
+        }
+        switch (state) {
+            case MENU:
+                t.add(new float[]{startBtnL(), startBtnT(), startBtnR(), startBtnB(), F_START, 0});
+                t.add(new float[]{resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), F_SCORES, 0});
+                t.add(new float[]{modeBtnL(), howBtnT(), modeBtnL() + midBtnW(), howBtnB(), F_MODE, 0});
+                t.add(new float[]{pickBtnL(), howBtnT(), pickBtnL() + midBtnW(), howBtnB(), F_PICK, 0});
+                t.add(new float[]{howBtnL(), howBtnT(), howBtnR(), howBtnB(), F_HOW, 0});
+                t.add(new float[]{exitBtnL(), exitBtnT(), exitBtnR(), exitBtnB(), F_EXIT, 0});
+                addRoundButtons(t);
+                break;
+            case CRASH:
+                if (crashTimer <= 0.9f) break;     // same moment the touch buttons start working
+                if (canOfferContinue()) t.add(new float[]{contBtnL(), contBtnT(), contBtnR(), contBtnB(), F_CONTINUE, 0});
+                t.add(new float[]{howBtnL(), howBtnT(), howBtnR(), howBtnB(), F_DONE, 0});
+                t.add(new float[]{resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), F_SCORES, 0});
+                addRoundButtons(t);
+                break;
+            case SCORES:
+                t.add(new float[]{howBtnL(), howBtnT(), howBtnR(), howBtnB(), F_BACK, 0});
+                t.add(new float[]{privBtnL(), resetBtnT(), privBtnR(), resetBtnB(), F_STATS, 0});
+                t.add(new float[]{resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), F_RESET, 0});
+                break;
+            case STATS:
+                t.add(new float[]{howBtnL(), howBtnT(), howBtnR(), howBtnB(), F_BACK, 0});
+                if (ads != null && ads.privacyOptionsRequired())
+                    t.add(new float[]{privBtnL(), resetBtnT(), privBtnR(), resetBtnB(), F_PRIVACY, 0});
+                break;
+            case UPGRADE:
+                if (!isFull()) t.add(new float[]{buyBtnL(), buyBtnT(), buyBtnR(), buyBtnB(), F_BUY, 0});
+                t.add(new float[]{howBtnL(), howBtnT(), howBtnR(), howBtnB(), F_BACK, 0});
+                break;
+            case RUN:
+                if (paused) {
+                    t.add(new float[]{pResumeL(), pBtnT(), pResumeR(), pBtnB(), F_RESUME, 0});
+                    t.add(new float[]{pEndL(), pBtnT(), pEndR(), pBtnB(), F_END, 0});
+                }
+                break;
+            default:
+                break;
+        }
+        return t;
+    }
+
+    private void addRoundButtons(ArrayList<float[]> t) {
+        float r = themeBtnR();
+        t.add(new float[]{soundBtnX() - r, themeBtnY() - r, soundBtnX() + r, themeBtnY() + r, F_SOUND, 1});
+        t.add(new float[]{themeBtnX() - r, themeBtnY() - r, themeBtnX() + r, themeBtnY() + r, F_DARK, 1});
+    }
+
+    /** Index of the highlighted button, or the screen's first button if it isn't on this screen. */
+    private int focusIndex(ArrayList<float[]> t) {
+        int a = focusAction;
+        for (int i = 0; i < t.size(); i++) if ((int) t.get(i)[4] == a) return i;
+        return 0;
+    }
+
+    /** Moves the highlight to the nearest button in the direction pressed. */
+    private void moveFocus(int dx, int dy) {
+        keyNav = true;
+        ArrayList<float[]> t = focusTargets();
+        if (t.isEmpty()) return;
+        float[] cur = t.get(focusIndex(t));
+        float x0 = (cur[0] + cur[2]) * 0.5f, y0 = (cur[1] + cur[3]) * 0.5f;
+        float bestScore = Float.MAX_VALUE;
+        float[] best = null;
+        for (float[] b : t) {
+            if (b == cur) continue;
+            float ddx = (b[0] + b[2]) * 0.5f - x0, ddy = (b[1] + b[3]) * 0.5f - y0;
+            float along = dx * ddx + dy * ddy;              // distance in the pressed direction
+            float across = Math.abs(dx != 0 ? ddy : ddx);    // how far off to the side
+            if (along <= H * 0.01f) continue;
+            float score = along + across * 2.5f;
+            if (score < bestScore) { bestScore = score; best = b; }
+        }
+        if (best == null) return;
+        focusAction = (int) best[4];
+        play(sStep, 0.5f, 1.3f);
+    }
+
+    /** SELECT on a menu: does exactly what tapping the highlighted button does. */
+    private void pressFocused() {
+        keyNav = true;
+        ArrayList<float[]> t = focusTargets();
+        if (t.isEmpty()) return;
+        if (state == CRASH && crashTimer <= 0.9f) return;   // don't skip the crash screen by accident
+        int a = (int) t.get(focusIndex(t))[4];
+        focusAction = a;
+        switch (a) {
+            case F_START: startReq = true; break;
+            case F_HOW: tutStart = true; break;
+            case F_MODE: modeReq = true; break;
+            case F_PICK: themePickReq = true; break;
+            case F_SCORES: scoresReq = true; break;
+            case F_EXIT: exitDialog = true; break;
+            case F_DARK: toggleTheme = true; break;
+            case F_SOUND: toggleSound = true; break;
+            case F_DLG_EXIT: exitReq = true; break;
+            case F_DLG_STAY: exitDialog = false; break;
+            case F_DLG_UP: exitDialog = false; upgradeReq = true; break;
+            case F_DONE: doneReq = true; break;
+            case F_CONTINUE: continueTap = true; break;
+            case F_BACK: backReq = true; break;
+            case F_RESET: resetTap = true; break;
+            case F_STATS: statsReq = true; break;
+            case F_PRIVACY: privacyReq = true; break;
+            case F_BUY: buyReq = true; break;
+            case F_RESUME: resumeReq = true; break;
+            case F_END: endRunReq = true; break;
+            default: break;
+        }
+    }
+
+    /** Gold outline around the highlighted button (TV, or once a keyboard/remote is used). */
+    private void drawFocus(Canvas c) {
+        if (!(tv || keyNav) || inPlay()) return;
+        ArrayList<float[]> t = focusTargets();
+        if (t.isEmpty()) return;
+        float[] b = t.get(focusIndex(t));
+        float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 5f);
+        float pad = H * 0.012f;
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(3f, H * 0.008f));
+        p.setColor(Color.argb((int) (170 + 85 * pulse), 255, 212, 70));
+        if (b[5] == 1) {
+            c.drawCircle((b[0] + b[2]) * 0.5f, (b[1] + b[3]) * 0.5f, (b[2] - b[0]) * 0.5f * 1.35f + pad, p);
+        } else {
+            rect.set(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad);
+            float rr = rect.height() * 0.5f;
+            c.drawRoundRect(rect, rr, rr, p);
+        }
+        p.setStyle(Paint.Style.FILL);
+    }
+
     private boolean inScoresTitle(MotionEvent e) {
         float pw = Math.min(W * 0.8f, H * 1.9f);
         return e.getX() > cx - pw / 2 && e.getX() < cx && e.getY() < H * 0.17f;
@@ -789,6 +1049,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float dead = 0.45f;
         float s = Math.abs(t) < dead ? 0f : (t - Math.signum(t) * dead) / 5.0f;
         s = clamp(s, -1f, 1f);
+        // Remote arrows / controller stick: a held arrow builds up to a full turn in about
+        // a third of a second, so short taps make small corrections. They win over tilt.
+        float k = (keyRight ? 1f : 0f) - (keyLeft ? 1f : 0f);
+        float pad = padX;
+        if (Math.abs(pad) > Math.abs(k)) k = pad;
+        float rate = (k == 0f || Math.signum(k) != Math.signum(keySteer) ? 10f : 3.2f) * dt;
+        keySteer += clamp(k - keySteer, -rate, rate);
+        if (Math.abs(keySteer) > 0.001f) s = keySteer;
         steer += (s - steer) * Math.min(1f, dt * 12f);
 
         animTime += dt;
@@ -1018,6 +1286,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 paused = false;
                 jumpReq = false;
                 touching = false;
+                clearKeys();
             }
             tapped = false;
             return;
@@ -1030,7 +1299,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 : Math.min(BASE_SPEED + baseTime * SPEED_GAIN, MAX_BASE);
         if (score() >= 1000 && !zenRun) badge(Progress.KM1);
         if (score() >= 5000 && !zenRun) badge(Progress.KM5);
-        if (touching) boost = Math.min(boost + BOOST_GAIN * dt, MAX_BOOST);
+        if (sprintHeld()) boost = Math.min(boost + BOOST_GAIN * dt, MAX_BOOST);
         else boost = Math.max(0f, boost - BOOST_DECAY * dt);
         float target = base + boost;
         speed += (target - speed) * Math.min(1f, dt * 3f);
@@ -1665,15 +1934,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             prefs.edit().putInt("best", best).apply();
         }
         logRun();
-        try {
-            Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null && v.hasVibrator()) {
-                v.vibrate(VibrationEffect.createOneShot(250, VibrationEffect.DEFAULT_AMPLITUDE));
-            }
-        } catch (Exception ignored) { }
+        buzz(250);
     }
 
     private int score() { return (int) distance + bonus; }
+
+    /** Sprinting: a finger on the right half of the screen, or UP held on a remote/controller. */
+    private boolean sprintHeld() { return touching || keyUp || keySprint || padUp; }
 
     // ---- spawning -----------------------------------------------------------------
 
@@ -1878,6 +2145,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawRect(0, 0, W, H, p);
         }
         drawHud(c);
+        drawFocus(c);
     }
 
     private void drawSky(Canvas c) {
@@ -2483,7 +2751,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             p.setColor(0x55000000);
             rect.set(bx, by, bx + bw, by + bh);
             c.drawRoundRect(rect, bh, bh, p);
-            p.setColor(touching ? 0xFFFFC94A : 0xFFFFE9A8);
+            p.setColor(sprintHeld() ? 0xFFFFC94A : 0xFFFFE9A8);
             rect.set(bx, by, bx + bw * clamp(boost / MAX_BOOST, 0f, 1f), by + bh);
             c.drawRoundRect(rect, bh, bh, p);
             txt.setTextSize(H * 0.03f);
@@ -2496,9 +2764,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 txt.setTextSize(H * 0.035f);
                 txt.setColor(Color.argb((int) (220 * a), 255, 255, 255));
                 txt.setTextAlign(Paint.Align.LEFT);
-                c.drawText("\u25C0 TAP: JUMP", pad, H - pad * 0.8f, txt);
+                c.drawText(tv ? "SELECT: JUMP" : "\u25C0 TAP: JUMP", pad, H - pad * 0.8f, txt);
                 txt.setTextAlign(Paint.Align.RIGHT);
-                c.drawText("HOLD: SPRINT \u25B6", W - pad, H - pad * 0.8f, txt);
+                c.drawText(tv ? "HOLD \u25B2: SPRINT" : "HOLD: SPRINT \u25B6", W - pad, H - pad * 0.8f, txt);
                 txt.setColor(Color.WHITE);
             }
             if (msgTimer > 0 && state == RUN) {
@@ -2544,7 +2812,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             // a single, short controls reminder (the tutorial covers the rest)
             txt.setTextSize(H * 0.036f);
             txt.setColor(0xCCFFFFFF);
-            c.drawText("Tilt to steer  \u2022  tap LEFT to jump  \u2022  hold RIGHT to sprint", cx, H * 0.535f, txt);
+            c.drawText(tv ? "\u25C0 \u25B6 steer  \u2022  SELECT to jump  \u2022  hold \u25B2 to sprint  \u2022  PLAY/PAUSE to pause"
+                         : "Tilt to steer  \u2022  tap LEFT to jump  \u2022  hold RIGHT to sprint", cx, H * 0.535f, txt);
             txt.setColor(Color.WHITE);
             float pulse = 0.5f + 0.5f * (float) Math.sin(menuTime * 4f);
             pill(c, startBtnL(), startBtnT(), startBtnR(), startBtnB(), 0xEE1E7A3C,
@@ -2555,7 +2824,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText(zenMode && isFull() ? "START ZEN RUN" : "START",
                     cx, (startBtnT() + startBtnB()) * 0.5f + H * 0.023f, txt);
             pill(c, exitBtnL(), exitBtnT(), exitBtnR(), exitBtnB(), 0x55000000, 0x66FFFFFF, "\u2715  EXIT");
-            if (tiltSensor == null) {
+            if (tiltSensor == null && !tv) {
                 txt.setColor(0xFFFF8A80);
                 txt.setTextSize(H * 0.035f);
                 c.drawText("No tilt sensor found on this device", cx, H * 0.13f, txt);
@@ -2645,7 +2914,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         drawPickupFx(c);
 
-        if (state == RUN && !paused) drawPauseButton(c);
+        if (state == RUN && !paused && !tv) drawPauseButton(c);
         if (state == RUN && paused) {
             p.setStyle(Paint.Style.FILL);
             p.setColor(0x99000000);
@@ -2748,6 +3017,43 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
              "Hold the phone level to run straight.",
              "Snails turn up more often as you get faster — use them!"}};
 
+    // Fire TV wording for the steps that talk about tilting and touching.
+    private static final String[] TUT_TITLE_TV = {
+            "Press LEFT on the remote",
+            "Now press RIGHT",
+            "Hold UP to SPRINT",
+            "Let go of UP to ease off",
+            "Press SELECT to JUMP",
+            null,
+            null,
+            "Bear! Press SELECT TWICE",
+            null, null, null, null, null};
+    private static final String[] TUT_BODY_TV = {
+            "Hold it down to steer left. Quick taps make small moves.",
+            "The longer you hold an arrow, the harder you turn.",
+            "Keep holding \u2014 the longer you hold, the faster you go.",
+            "You drop back to your base speed.",
+            "The centre button sends you about 1.5 m into the air.",
+            null,
+            "No way around \u2014 press SELECT just before you reach it.",
+            "Press once to jump, then again in the air to go twice as high.",
+            null, null, null, null, null};
+    private static final String[] TUT_OPTIONS_TV = {
+            "On the menus, the arrows move the gold outline and SELECT presses it.",
+            "Sun / moon button (top right): light or dark mode.",
+            "Scores: your last 10 runs, plus Stats & Badges.",
+            "How To Play: replay this tutorial any time.",
+            "Jump rocks and foxes; press SELECT twice to high-jump bears and deer.",
+            "PLAY/PAUSE, MENU or BACK pauses a run."};
+
+    private String tutTitle() {
+        return tv && TUT_TITLE_TV[tutStep] != null ? TUT_TITLE_TV[tutStep] : TUT_TITLE[tutStep];
+    }
+
+    private String tutBody() {
+        return tv && TUT_BODY_TV[tutStep] != null ? TUT_BODY_TV[tutStep] : TUT_BODY[tutStep];
+    }
+
     private static final float TUT_BASE = 13f;
 
     private void startTutorial() {
@@ -2826,7 +3132,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         blueFlash = Math.max(0f, blueFlash - dt * 1.5f);
 
         // same running physics as a real run, at a gentle fixed base speed
-        if (touching) boost = Math.min(boost + BOOST_GAIN * dt, MAX_BOOST);
+        if (sprintHeld()) boost = Math.min(boost + BOOST_GAIN * dt, MAX_BOOST);
         else boost = Math.max(0f, boost - BOOST_DECAY * dt);
         speed += (TUT_BASE + boost - speed) * Math.min(1f, dt * 3f);
         float latMax = 7f + speed * 0.06f;
@@ -2867,7 +3173,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 if (boost >= 18f) tutSuccess();
                 break;
             case T_RELEASE:
-                if (!touching && boost < 2f && tutTimer > 0.4f) tutSuccess();
+                if (!sprintHeld() && boost < 2f && tutTimer > 0.4f) tutSuccess();
                 break;
             case T_JUMP:
                 if (tutJumped && !airborne) tutSuccess();
@@ -2962,7 +3268,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 ok = !blocked;
                 if (!ok) {
                     tutSay(jumpH > 0f ? "Too early or too late \u2014 jump just before it!"
-                                      : "Tap the LEFT side to jump over it!", false, 2.2f);
+                                      : (tv ? "Press SELECT to jump over it!" : "Tap the LEFT side to jump over it!"), false, 2.2f);
                 }
             } else {
                 ok = clearance(tutObj) >= 0f || jumpH >= clearHeight(tutObj);
@@ -2975,19 +3281,16 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 } else {
                     play(sCrash, 0.5f);
                     if (tutStep == T_BEAR) {
-                        tutSay(jumpH > 0f ? "Higher! Tap again while you're in the air."
-                                          : "Tap the LEFT side twice to high jump!", false, 2.4f);
+                        tutSay(jumpH > 0f ? (tv ? "Higher! Press SELECT again while you're in the air."
+                                                 : "Higher! Tap again while you're in the air.")
+                                          : (tv ? "Press SELECT twice to high jump!"
+                                                : "Tap the LEFT side twice to high jump!"), false, 2.4f);
                     } else if (tutStep != T_WALL) {
                         tutSay("Ouch! That would have been a crash. Try again.", false, 2.2f);
                     }
                     flash = 0.7f;
                     shake = 0.5f;
-                    try {
-                        Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
-                        if (v != null && v.hasVibrator()) {
-                            v.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE));
-                        }
-                    } catch (Exception ignored) { }
+                    buzz(120);
                 }
                 tutObj = null;
                 tutDelay = 1.6f;
@@ -3047,10 +3350,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText("PRACTICE  •  STEP " + (tutStep + 1) + " OF " + TUT_STEPS, cx, H * 0.08f, txt);
             txt.setColor(Color.WHITE);
             txt.setTextSize(H * 0.06f);
-            c.drawText(TUT_TITLE[tutStep], cx, H * 0.155f, txt);
+            c.drawText(tutTitle(), cx, H * 0.155f, txt);
             txt.setTextSize(H * 0.035f);
             txt.setColor(0xDDFFFFFF);
-            c.drawText(TUT_BODY[tutStep], cx, H * 0.215f, txt);
+            c.drawText(tutBody(), cx, H * 0.215f, txt);
             txt.setColor(Color.WHITE);
 
             if (tutStep <= T_RIGHT && tutWait < 0f) drawTiltHint(c, tutStep == T_LEFT ? -1f : 1f);
@@ -3070,10 +3373,10 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             c.drawText("STEP " + (tutStep + 1) + " OF " + TUT_STEPS, cx, rect.top + H * 0.07f, txt);
             txt.setColor(Color.WHITE);
             txt.setTextSize(H * 0.07f);
-            c.drawText(TUT_TITLE[tutStep], cx, rect.top + H * 0.15f, txt);
+            c.drawText(tutTitle(), cx, rect.top + H * 0.15f, txt);
             txt.setTextAlign(Paint.Align.LEFT);
             txt.setTextSize(H * 0.038f);
-            String[] lines = TUT_CARD[tutStep];
+            String[] lines = tv && tutStep == TUT_STEPS - 1 ? TUT_OPTIONS_TV : TUT_CARD[tutStep];
             for (int i = 0; i < lines.length; i++) {
                 float y = rect.top + H * 0.25f + i * H * 0.075f;
                 p.setColor(0xFFFFD45A);
@@ -3084,7 +3387,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setColor(Color.argb((int) (255 * pulse), 255, 220, 120));
             txt.setTextSize(H * 0.045f);
-            c.drawText(tutStep >= TUT_STEPS - 1 ? "TAP TO FINISH" : "TAP TO CONTINUE",
+            c.drawText(tv ? (tutStep >= TUT_STEPS - 1 ? "PRESS SELECT TO FINISH" : "PRESS SELECT TO CONTINUE")
+                       : (tutStep >= TUT_STEPS - 1 ? "TAP TO FINISH" : "TAP TO CONTINUE"),
                     cx, rect.bottom - H * 0.05f, txt);
             txt.setColor(Color.WHITE);
         }
@@ -3105,7 +3409,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             txt.setColor(Color.WHITE);
         }
 
-        pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF, "SKIP TUTORIAL");
+        pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), 0x66000000, 0x99FFFFFF,
+                tv ? "BACK: SKIP TUTORIAL" : "SKIP TUTORIAL");
     }
 
     /** A little phone that rocks the way you should tilt, plus big arrows. */
@@ -3114,17 +3419,37 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         float wobble = (float) Math.sin(animTime * 3f);
         float ang = dir * (14f + 10f * (0.5f + 0.5f * wobble));
         float pw = H * 0.34f, ph = H * 0.17f;
-        c.save();
-        c.rotate(ang, x, y);
-        rect.set(x - pw / 2, y - ph / 2, x + pw / 2, y + ph / 2);
-        p.setStyle(Paint.Style.FILL);
-        p.setColor(0xAA101828);
-        c.drawRoundRect(rect, ph * 0.18f, ph * 0.18f, p);
-        p.setStyle(Paint.Style.STROKE);
-        p.setStrokeWidth(Math.max(3f, H * 0.006f));
-        p.setColor(0xEEFFFFFF);
-        c.drawRoundRect(rect, ph * 0.18f, ph * 0.18f, p);
-        c.restore();
+        if (tv) {
+            // Fire TV: a remote's arrow key, lit up while it's held
+            boolean held = dir < 0 ? keyLeft : keyRight;
+            float k = H * 0.075f;
+            rect.set(x - k, y - k, x + k, y + k);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(held ? 0xDD8A6A10 : 0xAA101828);
+            c.drawRoundRect(rect, k * 0.4f, k * 0.4f, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(3f, H * 0.006f));
+            p.setColor(0xEEFFFFFF);
+            c.drawRoundRect(rect, k * 0.4f, k * 0.4f, p);
+            p.setStyle(Paint.Style.FILL);
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTextSize(H * 0.07f);
+            txt.setColor(Color.WHITE);
+            c.drawText(dir < 0 ? "\u25C0" : "\u25B6", x, y + H * 0.025f, txt);
+            pw = k * 1.6f;
+        } else {
+            c.save();
+            c.rotate(ang, x, y);
+            rect.set(x - pw / 2, y - ph / 2, x + pw / 2, y + ph / 2);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xAA101828);
+            c.drawRoundRect(rect, ph * 0.18f, ph * 0.18f, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(3f, H * 0.006f));
+            p.setColor(0xEEFFFFFF);
+            c.drawRoundRect(rect, ph * 0.18f, ph * 0.18f, p);
+            c.restore();
+        }
 
         // chevrons pointing the way
         p.setStyle(Paint.Style.STROKE);
@@ -3157,8 +3482,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
     /** Left-half highlight with a bouncing figure arrow: tap here to jump. */
     private void drawJumpHint(Canvas c) {
-        halfHighlight(c, true);
-        float x = W * 0.25f, y = H * 0.62f;
+        if (!tv) halfHighlight(c, true);
+        float x = tv ? cx : W * 0.25f, y = H * 0.62f;
         float bounce = Math.abs((float) Math.sin(animTime * 3.5f)) * H * 0.06f;
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeCap(Paint.Cap.ROUND);
@@ -3173,25 +3498,26 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         txt.setTextAlign(Paint.Align.CENTER);
         txt.setTextSize(H * 0.04f);
         txt.setColor(Color.WHITE);
-        c.drawText(tutStep == T_BEAR ? "TAP, TAP AGAIN!" : "TAP HERE TO JUMP", x, y + H * 0.13f, txt);
+        c.drawText(tv ? (tutStep == T_BEAR ? "SELECT, SELECT AGAIN!" : "PRESS SELECT")
+                       : (tutStep == T_BEAR ? "TAP, TAP AGAIN!" : "TAP HERE TO JUMP"), x, y + H * 0.13f, txt);
     }
 
     /** Pulsing fingertip and the sprint meter. */
     private void drawSprintHint(Canvas c, boolean hold) {
-        float x = W * 0.75f, y = H * 0.62f;
+        float x = tv ? cx : W * 0.75f, y = H * 0.62f;
         if (hold) {
-            halfHighlight(c, false);
+            if (!tv) halfHighlight(c, false);
             float pulse = 0.5f + 0.5f * (float) Math.sin(animTime * 5f);
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(Math.max(3f, H * 0.006f));
             p.setColor(Color.argb((int) (120 + 120 * pulse), 255, 212, 70));
             c.drawCircle(x, y, H * (0.06f + 0.03f * pulse), p);
             p.setStyle(Paint.Style.FILL);
-            p.setColor(touching ? 0xDDFFD45A : 0x88FFFFFF);
+            p.setColor(sprintHeld() ? 0xDDFFD45A : 0x88FFFFFF);
             c.drawCircle(x, y, H * 0.045f, p);
             txt.setTextAlign(Paint.Align.CENTER);
             txt.setTextSize(H * 0.035f);
-            c.drawText(touching ? "KEEP HOLDING..." : "HOLD HERE", x, y + H * 0.12f, txt);
+            c.drawText(sprintHeld() ? "KEEP HOLDING..." : (tv ? "HOLD \u25B2 UP" : "HOLD HERE"), x, y + H * 0.12f, txt);
         }
         float bw = W * 0.34f, bh = H * 0.028f;
         float bx = cx - bw / 2, by = H * 0.8f;
@@ -3199,7 +3525,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         p.setStyle(Paint.Style.FILL);
         p.setColor(0x77000000);
         c.drawRoundRect(rect, bh, bh, p);
-        p.setColor(touching ? 0xFFFFC94A : 0xFFFFE9A8);
+        p.setColor(sprintHeld() ? 0xFFFFC94A : 0xFFFFE9A8);
         rect.set(bx, by, bx + bw * clamp(boost / MAX_BOOST, 0f, 1f), by + bh);
         c.drawRoundRect(rect, bh, bh, p);
         txt.setTextAlign(Paint.Align.CENTER);
@@ -3615,7 +3941,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 cx, bottom + H * 0.024f, txt);
         txt.setTextSize(H * 0.026f);
         txt.setColor(0x99FFFFFF);
-        c.drawText("\u2605 new high score     \u25B6 continued after an ad     gold = your best",
+        c.drawText(BuildConfig.FIRE_TV ? "\u2605 new high score     \u25B6 kept running after a crash     gold = your best"
+                                      : "\u2605 new high score     \u25B6 continued after an ad     gold = your best",
                 cx, bottom - H * 0.025f, txt);
         if (holidayPreview >= 0) {
             txt.setColor(0xFFFFD45A);
@@ -3626,7 +3953,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         boolean confirm = resetConfirm > 0f;
         pill(c, resetBtnL(), resetBtnT(), resetBtnR(), resetBtnB(), confirm ? 0xCCB3261E : 0x66000000,
-                0x99FFFFFF, confirm ? "TAP AGAIN TO RESET" : "RESET SCORES");
+                0x99FFFFFF, confirm ? (tv ? "PRESS AGAIN TO RESET" : "TAP AGAIN TO RESET") : "RESET SCORES");
         pill(c, howBtnL(), howBtnT(), howBtnR(), howBtnB(), 0x66000000, 0x99FFFFFF, "BACK");
         pill2(c, privBtnL(), resetBtnT(), privBtnR(), resetBtnB(), "", "STATS & BADGES", !isFull(), 0x66000000);
         if (BuildConfig.ALLOW_TEST_UNLOCK) {
@@ -3763,12 +4090,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         msg = "SLOW DOWN  -" + kmh + " km/h";
         msgTimer = 1.6f;
         blueFlash = 1f;
-        try {
-            Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null && v.hasVibrator()) {
-                v.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE));
-            }
-        } catch (Exception ignored) { }
+        buzz(60);
     }
 
     /** A giant snail with a glowing spiral shell, bobbing so it reads as a pickup. */
@@ -3937,12 +4259,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void buzz(int ms) {
-        try {
-            Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null && v.hasVibrator()) {
-                v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
-            }
-        } catch (Exception ignored) { }
+        Haptics.buzz(getContext(), ms);
     }
 
     private static final int[] BLOOM_COLS = {0xFFFF6FAE, 0xFFB47CFF, 0xFFFF9A3C, 0xFF5FC8FF};
