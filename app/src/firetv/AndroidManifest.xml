@@ -13,6 +13,7 @@
     <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
 
     <application android:banner="@drawable/tv_banner">
+        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" tools:node="remove" />
         <activity
             android:name=".MainActivity"
             android:screenOrientation="landscape"
